@@ -1,0 +1,177 @@
+server:
+  port: ${SERVER_PORT:8088}
+  forward-headers-strategy: framework # Bắt buộc có để nhận diện đúng HTTPS phía sau Nginx/Cloudflare
+  servlet:
+    context-path: ${CONTEXT_PATH:/api/v1}
+
+spring:
+  application:
+    name: ${APP_NAME:core-backend-service}
+
+  # Tự động nạp file .env khi chạy Local
+  config:
+    import: optional:file:.env[.properties]
+
+  # ==========================================
+  # CƠ SỞ DỮ LIỆU CHÍNH (POSTGRESQL)
+  # ==========================================
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:app_db}?sslmode=${DB_SSL_MODE:disable}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:123456}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+
+  jpa:
+    hibernate:
+      # Local để 'update', Deploy chuyển biến DDL_AUTO thành 'validate' hoặc 'none'
+      ddl-auto: ${DDL_AUTO:update}
+    show-sql: ${SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: ${APP_TIMEZONE:Asia/Ho_Chi_Minh}
+
+  # ==========================================
+  # CACHE & SESSION (REDIS)
+  # ==========================================
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+      timeout: ${REDIS_TIMEOUT:10000ms}
+
+  jackson:
+    time-zone: ${APP_TIMEZONE:Asia/Ho_Chi_Minh}
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 15MB
+
+  # ==========================================
+  # (OPTIONAL) MONGODB - Mở comment khi dự án cần NoSQL
+  # ==========================================
+  # mongodb:
+  #   uri: ${MONGODB_URI:mongodb://localhost:27017/app_chat}
+
+  # ==========================================
+  # (OPTIONAL) OAUTH2 GOOGLE - Mở comment khi cần Login Google
+  # ==========================================
+  # security:
+  #   oauth2:
+  #     client:
+  #       registration:
+  #         google:
+  #           client-id: ${GOOGLE_CLIENT_ID}
+  #           client-secret: ${GOOGLE_CLIENT_SECRET}
+  #           scope:
+  #             - openid
+  #             - email
+  #             - profile
+  #       provider:
+  #         google:
+  #           authorization-uri: https://accounts.google.com/o/oauth2/v2/auth?prompt=select_account
+
+# ==========================================
+# CẤU HÌNH HỆ THỐNG DÙNG CHUNG (CORE APP)
+# ==========================================
+app:
+  api:
+    version: 1.0.0
+    description: Core Backend Service APIs
+  cors:
+    allowed-origins:
+      - ${FRONTEND_BASE_URL:http://localhost:5173}
+  security:
+    whitelist: "/categories,/categories/**,/products,/products/**"
+      # - /oauth2/**
+  jwt:
+    secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
+    access-ttl: ${JWT_ACCESS_TTL:15m}
+    refresh-ttl: ${JWT_REFRESH_TTL:7d}
+  frontend:
+    base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+  # oauth2:
+  #   frontend-callback-url: ${FRONTEND_CALLBACK_URL:http://localhost:5173/oauth2/callback}
+  auth:
+    cookie:
+      access-token-name: ${AUTH_ACCESS_COOKIE_NAME:access_token}
+      refresh-token-name: ${AUTH_COOKIE_NAME:refresh_token}
+      # Local: false | Deploy: true (bắt buộc HTTPS)
+      secure: ${AUTH_COOKIE_SECURE:false}
+      # Local: Lax | Deploy: None (nếu FE và BE khác domain)
+      same-site: ${AUTH_COOKIE_SAME_SITE:Lax}
+      path: ${AUTH_COOKIE_PATH:/}
+
+# ==========================================
+# TÀI LIỆU API (SWAGGER / OPENAPI)
+# ==========================================
+springdoc:
+  api-docs:
+    enabled: ${SWAGGER_ENABLED:true} # Deploy có thể truyền biến false để tắt
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:true}
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+  show-actuator: false
+  default-produces-media-type: application/json
+
+# ==========================================
+# ACTUATOR HEALTH CHECK (Dùng cho DevOps / Monitoring)
+# ==========================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    defaults:
+      enabled: true
+
+# ==========================================
+# (OPTIONAL) CÁC DỊCH VỤ NGOÀI - MỞ COMMENT KHI SỬ DỤNG
+# ==========================================
+# socket:
+#   server:
+#     host: ${SOCKET_SERVER_HOST:0.0.0.0}
+#     port: ${SOCKET_SERVER_PORT:9092}
+
+# otp:
+#   ttl-seconds: ${OTP_TTL_SECONDS:90}
+#   max-attempts: ${OTP_MAX_ATTEMPTS:5}
+#   verified-ttl-seconds: ${OTP_VERIFIED_TTL_SECONDS:300}
+
+# supabase:
+#   url: ${SUPABASE_URL:}
+#   anon-key: ${SUPABASE_ANON_KEY:}
+#   service-key: ${SUPABASE_SERVICE_KEY:}
+
+# brevo:
+#   api-key: ${BREVO_API_KEY:}
+#   sender:
+#     email: ${BREVO_SENDER_EMAIL:no-reply@example.com}
+#     name: ${BREVO_SENDER_NAME:System}
+
+# anything-llm:
+#   base-url: ${ANYTHING_LLM_BASE_URL:http://localhost:3001/api}
+#   api-key: ${ANYTHING_LLM_API_KEY:}
+#   workspace-slug: ${ANYTHING_LLM_WORKSPACE_SLUG:core-workspace}
+#   model-name: ${ANYTHING_LLM_MODEL_NAME:gemma4}
+
+# payos:
+#   client-id: ${PAYOS_CLIENT_ID:}
+#   api-key: ${PAYOS_API_KEY:}
+#   checksum-key: ${PAYOS_CHECKSUM_KEY:}
