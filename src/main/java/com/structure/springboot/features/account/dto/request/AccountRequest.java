@@ -23,11 +23,4 @@ public record AccountRequest(
 
         @NotNull(message = "Role ID is required")
         UUID roleId
-) {
-    public AccountRequest {
-        username = (username != null && !username.isBlank())
-                ? username.trim() : null;
-        email = (email != null && !email.isBlank())
-                ? email.trim() : null;
-    }
-}
+) {}
