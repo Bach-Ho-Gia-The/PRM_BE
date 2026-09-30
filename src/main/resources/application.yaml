@@ -90,7 +90,7 @@ app:
     allowed-origins:
       - ${FRONTEND_BASE_URL:http://localhost:5173}
   security:
-    whitelist: "/categories,/categories/**,/products,/products/**"
+    whitelist: "/categories,/categories/**,/products,/products/**,/accounts,/accounts/**,/roles,/roles/**"
       # - /oauth2/**
   jwt:
     secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
