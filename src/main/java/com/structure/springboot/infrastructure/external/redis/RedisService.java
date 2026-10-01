@@ -1,9 +1,9 @@
 package com.structure.springboot.infrastructure.external.redis;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;   // ✅ Jackson 3
 
 import java.time.Duration;
 import java.util.Collection;
@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 public class RedisService {
 
     private final RedisTemplate<String, Object> redisTemplate;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;   // ✅ JsonMapper thay ObjectMapper
 
     public void set(String key, Object value) {
         redisTemplate.opsForValue().set(key, value);
@@ -27,18 +27,14 @@ public class RedisService {
 
     public <T> Optional<T> get(String key, Class<T> clazz) {
         Object val = redisTemplate.opsForValue().get(key);
-        if (val == null) {
-            return Optional.empty();
-        }
+        if (val == null) return Optional.empty();
 
-        // Nếu đối tượng đã đúng kiểu (ví dụ String, Long...) thì cast luôn
         if (clazz.isInstance(val)) {
             return Optional.of(clazz.cast(val));
         }
 
-        // Nếu Jackson trả về LinkedHashMap, convert an toàn sang đúng DTO mong muốn
         try {
-            return Optional.of(objectMapper.convertValue(val, clazz));
+            return Optional.of(jsonMapper.convertValue(val, clazz));
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }

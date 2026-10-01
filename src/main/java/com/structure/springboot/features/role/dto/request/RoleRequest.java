@@ -1,9 +1,9 @@
 package com.structure.springboot.features.role.dto.request;
 
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.structure.springboot.common.config.JacksonConfig;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 public record RoleRequest(
         @NotBlank(message = "Role name is required")
