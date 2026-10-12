@@ -4,6 +4,7 @@ import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.infrastructure.persistence.BaseEntity;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -31,6 +32,11 @@ public class RoleEntity extends BaseEntity {
     @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 
-    @OneToMany(mappedBy = "role", cascade = CascadeType.ALL, orphanRemoval = true)
+    /**
+     * CHỈ để đọc ngược. KHÔNG cascade, KHÔNG orphanRemoval: Account không "thuộc sở hữu" của Role,
+     * xoá một Role không được phép kéo theo xoá tài khoản. Việc chặn xoá do service kiểm tra.
+     */
+    @Builder.Default
+    @OneToMany(mappedBy = "role")
     private List<AccountEntity> accounts = new ArrayList<>();
 }

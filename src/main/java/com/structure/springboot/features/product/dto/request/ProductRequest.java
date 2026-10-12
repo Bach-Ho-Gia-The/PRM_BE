@@ -1,14 +1,25 @@
 package com.structure.springboot.features.product.dto.request;
 
+import com.structure.springboot.features.product.enums.ProductCollection;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.util.UUID;
 
+/**
+ * Body của {@code POST /products}.
+ *
+ * <p>{@code slug} để trống thì service tự sinh từ {@code name}. Tồn kho và gallery KHÔNG nằm ở đây:
+ * chúng là tài nguyên con, quản lý qua {@code /products/{id}/variants} và {@code /products/{id}/images}.</p>
+ */
 public record ProductRequest(
         @NotBlank(message = "Product name is required")
         @Size(max = 255, message = "Product name must not exceed 255 characters")
         String name,
+
+        @Size(max = 255, message = "Slug must not exceed 255 characters")
+        @Pattern(regexp = "^[a-z0-9]+(-[a-z0-9]+)*$", message = "Slug may contain only lowercase letters, digits and hyphens")
+        String slug,
 
         @NotBlank(message = "Product SKU is required")
         @Size(max = 50, message = "SKU must not exceed 50 characters")
@@ -18,11 +29,26 @@ public record ProductRequest(
         @DecimalMin(value = "0.0", inclusive = false, message = "Price must be greater than 0")
         BigDecimal price,
 
-        @NotNull(message = "Stock quantity is required")
-        @Min(value = 0, message = "Stock quantity cannot be negative")
-        Integer stockQuantity,
+        @DecimalMin(value = "0.0", inclusive = false, message = "Original price must be greater than 0")
+        BigDecimal originalPrice,
 
         String description,
+
+        String material,
+
+        String careInstructions,
+
+        @Size(max = 50, message = "Tag must not exceed 50 characters")
+        String tag,
+
+        @Size(max = 500, message = "Thumbnail URL must not exceed 500 characters")
+        String thumbnail,
+
+        ProductCollection collection,
+
+        Boolean isSummer,
+
+        Boolean isFeatured,
 
         @NotNull(message = "Category ID is required")
         UUID categoryId
