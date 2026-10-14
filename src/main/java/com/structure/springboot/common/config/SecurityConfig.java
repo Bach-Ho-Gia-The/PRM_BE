@@ -54,6 +54,28 @@ public class SecurityConfig {
     @Value("${app.security.whitelist:}")
     private String[] businessWhitelist;
 
+    // Tiền tố context-path (vd /api/v1). Spring Security 7 (Boot 4) so khớp request theo đường dẫn
+    // CÒN NGUYÊN context-path, nên whitelist viết "/products" sẽ không khớp "/api/v1/products" ⇒ 401.
+    @Value("${server.servlet.context-path:}")
+    private String contextPath;
+
+    /**
+     * Nhân đôi mỗi pattern thành 2 biến thể: dạng gốc ("/products") và dạng có tiền tố
+     * context-path ("/api/v1/products"). Nhờ vậy whitelist khớp bất kể Spring so khớp theo
+     * đường dẫn đã cắt hay chưa cắt context-path.
+     */
+    private String[] expandWithContextPath(String[] patterns) {
+        if (contextPath == null || contextPath.isBlank()) {
+            return patterns;
+        }
+        java.util.List<String> all = new java.util.ArrayList<>();
+        for (String p : patterns) {
+            all.add(p);
+            all.add(contextPath + p);
+        }
+        return all.toArray(new String[0]);
+    }
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
@@ -61,8 +83,8 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults()) // Kích hoạt CORS
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(SYSTEM_WHITELIST).permitAll()
-                        .requestMatchers(businessWhitelist).permitAll()
+                        .requestMatchers(expandWithContextPath(SYSTEM_WHITELIST)).permitAll()
+                        .requestMatchers(expandWithContextPath(businessWhitelist)).permitAll()
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception
