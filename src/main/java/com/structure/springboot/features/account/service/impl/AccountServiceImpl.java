@@ -13,6 +13,7 @@ import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.account.mapper.AccountMapper;
 import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.features.account.service.AccountService;
+import com.structure.springboot.features.order.service.OrderService;
 import com.structure.springboot.features.profile.service.ProfileService;
 import com.structure.springboot.features.role.entity.RoleEntity;
 import com.structure.springboot.features.role.repository.RoleRepository;
@@ -34,6 +35,7 @@ public class AccountServiceImpl implements AccountService {
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRedis refreshTokenRedis;
     private final ProfileService profileService;
+    private final OrderService orderService;
 
     @Override
     @Transactional
@@ -111,6 +113,15 @@ public class AccountServiceImpl implements AccountService {
     public void deleteAccount(UUID id) {
         AccountEntity entity = accountRepository.findById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Account not found with id: " + id));
+
+        // Đơn hàng trỏ về tài khoản bằng khoá ngoại, database sẽ chặn lệnh xoá. Để nó chặn thì
+        // client nhận đúng một câu "Data integrity violation" chung chung, không biết vướng ở đâu.
+        // Hỏi trước để trả về lý do thật. Hỏi qua OrderService chứ không tiêm OrderRepository:
+        // dữ liệu module nào thì module đó giữ.
+        if (orderService.hasOrders(id)) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "Cannot delete account with existing orders: " + id);
+        }
 
         // Xoá tài khoản mà để token còn sống thì người đó vẫn gọi API được cho tới khi token hết hạn.
         refreshTokenRedis.revokeEverySession(entity.getId().toString(), entity.getEmail());

@@ -18,6 +18,7 @@ import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.order.service.OrderService;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
+import com.structure.springboot.features.product.enums.ProductSize;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
@@ -35,7 +36,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -73,11 +78,29 @@ public class OrderServiceImpl implements OrderService {
                 .note(request.note())
                 .build();
 
+        Collection<OrderItemRequest> lines = mergeDuplicates(request.items());
+        Set<UUID> productIds = lines.stream()
+                .map(OrderItemRequest::productId)
+                .collect(Collectors.toSet());
+
+        // Nạp sẵn theo lô. Trước đây mỗi dòng hàng bắn 2 câu SQL (một tra sản phẩm, một tra biến
+        // thể) nên giỏ 20 món là 40 câu. Giờ cố định 2 câu, bất kể giỏ to tới đâu.
+        Map<UUID, ProductEntity> products = productRepository.findAllById(productIds).stream()
+                .collect(Collectors.toMap(ProductEntity::getId, Function.identity()));
+
+        // Khoá map là cặp (sản phẩm, size) vì đó mới là thứ định danh một dòng tồn kho.
+        // getProduct().getId() KHÔNG sinh thêm câu SQL: proxy lazy vốn đã giữ sẵn khoá ngoại.
+        Map<String, ProductVariantEntity> variants = productVariantRepository
+                .findByProductIdIn(productIds).stream()
+                .collect(Collectors.toMap(
+                        variant -> variantKey(variant.getProduct().getId(), variant.getSize()),
+                        Function.identity()));
+
         BigDecimal subtotal = BigDecimal.ZERO;
         int totalItems = 0;
 
-        for (OrderItemRequest line : mergeDuplicates(request.items())) {
-            OrderItemEntity item = buildItem(line, order);
+        for (OrderItemRequest line : lines) {
+            OrderItemEntity item = buildItem(line, order, products, variants);
             order.getItems().add(item);
 
             subtotal = subtotal.add(item.getLineTotal());
@@ -124,7 +147,7 @@ public class OrderServiceImpl implements OrderService {
         Map<String, OrderItemRequest> merged = new LinkedHashMap<>();
 
         for (OrderItemRequest item : items) {
-            String key = item.productId() + "_" + item.size();
+            String key = variantKey(item.productId(), item.size());
             merged.merge(key, item, (existing, incoming) -> new OrderItemRequest(
                     existing.productId(),
                     existing.size(),
@@ -134,15 +157,38 @@ public class OrderServiceImpl implements OrderService {
         return merged.values();
     }
 
-    /** Tra sản phẩm, kiểm tồn kho, trừ kho và chụp lại thông tin hiển thị vào dòng hàng. */
-    private OrderItemEntity buildItem(OrderItemRequest request, OrderEntity order) {
-        ProductEntity product = productRepository.findById(request.productId())
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasOrders(UUID accountId) {
+        return orderRepository.existsByAccountId(accountId);
+    }
+
+    /**
+     * Khoá định danh một dòng tồn kho: một sản phẩm có nhiều size, phải đủ cả cặp mới trỏ đúng
+     * một bản ghi. Dùng chung cho cả việc gộp dòng trùng trong giỏ lẫn việc tra biến thể đã nạp.
+     */
+    private String variantKey(UUID productId, ProductSize size) {
+        return productId + "_" + size;
+    }
+
+    /**
+     * Kiểm tồn kho, trừ kho và chụp lại thông tin hiển thị vào dòng hàng.
+     *
+     * <p>Sản phẩm và biến thể được truyền vào dưới dạng map đã nạp sẵn chứ không tự đi tra
+     * database: hàm này chạy trong vòng lặp, tra ở đây là nhân số câu SQL lên theo số dòng hàng.
+     * Entity trong map vẫn do persistence context quản lý nên {@code setStockQuantity} dưới đây
+     * vẫn được ghi xuống bình thường, và {@code @Version} vẫn chặn được tranh chấp tồn kho.</p>
+     */
+    private OrderItemEntity buildItem(OrderItemRequest request, OrderEntity order,
+                                      Map<UUID, ProductEntity> products,
+                                      Map<String, ProductVariantEntity> variants) {
+        ProductEntity product = Optional.ofNullable(products.get(request.productId()))
                 .filter(p -> p.getStatus() == null || p.getStatus() == RecordStatus.ACTIVE)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Product not available: " + request.productId()));
 
-        ProductVariantEntity variant = productVariantRepository
-                .findByProductIdAndSize(product.getId(), request.size())
+        ProductVariantEntity variant = Optional
+                .ofNullable(variants.get(variantKey(product.getId(), request.size())))
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Size " + request.size() + " is not available for product: " + product.getName()));
 

@@ -26,4 +26,13 @@ public interface OrderService {
      * "mã đơn này có thật", đủ để người ta dò ra mã đơn hợp lệ.</p>
      */
     OrderResponse getMyOrderByNumber(UUID accountId, String orderNumber);
+
+    /**
+     * Tài khoản này còn đơn hàng nào không.
+     *
+     * <p>Mở ra cho module tài khoản hỏi trước khi xoá. Không để {@code AccountServiceImpl} tiêm
+     * thẳng {@code OrderRepository}: dữ liệu của module nào thì module đó giữ, bên ngoài đi qua
+     * service — đúng hướng phụ thuộc mà {@code profileService} đang dùng ở cùng chỗ đó.</p>
+     */
+    boolean hasOrders(UUID accountId);
 }

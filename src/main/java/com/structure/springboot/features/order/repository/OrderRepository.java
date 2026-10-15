@@ -26,4 +26,12 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
 
     /** Danh sách đơn của tôi. KHÔNG fetch items — màn hình danh sách không dùng tới. */
     Page<OrderEntity> findByAccountId(UUID accountId, Pageable pageable);
+
+    /**
+     * Tài khoản này đã từng đặt đơn nào chưa.
+     *
+     * <p>Dùng {@code exists} chứ không đếm hay tải danh sách: chỉ cần biết có hay không, để
+     * phía tài khoản chặn lệnh xoá trước khi database kịp ném lỗi khoá ngoại.</p>
+     */
+    boolean existsByAccountId(UUID accountId);
 }
