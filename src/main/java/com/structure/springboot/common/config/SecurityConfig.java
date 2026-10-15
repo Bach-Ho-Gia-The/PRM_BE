@@ -2,8 +2,10 @@ package com.structure.springboot.common.config;
 
 import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
+import com.structure.springboot.common.security.AuthCookieProperties;
 import com.structure.springboot.common.security.JwtAuthenticationFilter;
 import com.structure.springboot.common.security.JwtProperties;
+import com.structure.springboot.common.security.LoginAttemptProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -31,7 +33,7 @@ import java.util.List;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({JwtProperties.class, AuthCookieProperties.class, LoginAttemptProperties.class})
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -86,7 +88,8 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(allowedOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With", "Accept"));
+        // X-Client-Type: cho phép client khai báo là "web" (nhận token qua cookie) hay "mobile" (nhận token trong body)
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With", "Accept", "X-Client-Type"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 

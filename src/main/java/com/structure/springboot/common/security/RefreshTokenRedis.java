@@ -3,6 +3,7 @@ package com.structure.springboot.common.security;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -58,18 +59,67 @@ public class RefreshTokenRedis {
         }
     }
 
-    // Cắm mốc thời gian logout/đổi mật khẩu (ĐÃ BỔ SUNG TTL = Refresh TTL để tự dọn dẹp RAM)
+    // Cắm mốc thời gian logout/đổi mật khẩu. TTL = Refresh TTL để key tự dọn, khỏi phình RAM.
+    // Dùng getRefreshTtlMs() cho đồng bộ với store(): cùng một nguồn giá trị, cùng một đường fallback.
     public void setLogoutTime(String email) {
-        Duration ttl = jwtProperties.refreshTtl(); // Tự hủy sau khi refresh token dài nhất hết hạn
         redis.opsForValue().set(
                 LOGOUT_TIME_PREFIX + email,
                 String.valueOf(System.currentTimeMillis()),
-                ttl
+                Duration.ofMillis(jwtProperties.getRefreshTtlMs())
         );
     }
 
-    public Long getLogoutTime(String email) {
-        String val = redis.opsForValue().get(LOGOUT_TIME_PREFIX + email);
-        return val != null ? Long.parseLong(val) : null;
+    /**
+     * Access token còn hiệu lực hay đã bị thu hồi — gọi trên MỌI request nên chỉ tốn
+     * <b>một vòng mạng Redis duy nhất</b> (MGET 2 key), không phải hai lần GET.
+     *
+     * <p>Hai lý do bị thu hồi:</p>
+     * <ol>
+     *   <li><b>Mốc logout toàn cục</b> — token phát hành trước khi đổi mật khẩu / logout-all / khoá
+     *       tài khoản thì chết, kể cả phiên khác.</li>
+     *   <li><b>Phiên đã logout</b> — access token mang claim {@code sid} chính là jti của refresh
+     *       token sinh ra nó. Refresh token bị xoá khỏi Redis ⇒ access token chết theo ngay lập tức,
+     *       không phải chờ hết 15 phút. Nhờ vậy không cần thêm bảng denylist riêng nào.</li>
+     * </ol>
+     */
+    /**
+     * Xoá sạch mọi phiên của một tài khoản. Hai bước bổ trợ nhau, thiếu bước nào cũng hở:
+     * <ul>
+     *   <li>{@code revokeAllTokens} giết các phiên <b>đang được Redis theo dõi</b>;</li>
+     *   <li>{@code setLogoutTime} cắm mốc thời gian, chặn nốt access token nào không mang
+     *       claim {@code sid} (token phát hành trước khi có cơ chế này).</li>
+     * </ul>
+     *
+     * <p>Đặt ở đây chứ không để mỗi service tự ghép hai lệnh: logout-all, đổi email, đổi mật khẩu
+     * và xoá tài khoản đều cần đúng một thao tác này. Trước đó nó bị chép thành hai bản private
+     * giống hệt nhau ở {@code AuthServiceImpl} và {@code AccountServiceImpl} — sửa một bên là lệch.</p>
+     */
+    public void revokeEverySession(String userId, String email) {
+        if (StringUtils.hasText(userId)) {
+            revokeAllTokens(userId);
+        }
+        if (StringUtils.hasText(email)) {
+            setLogoutTime(email);
+        }
+    }
+
+    public boolean isAccessTokenRevoked(String email, String sessionId, long issuedAtMillis) {
+        List<String> keys = sessionId == null
+                ? List.of(LOGOUT_TIME_PREFIX + email)
+                : List.of(LOGOUT_TIME_PREFIX + email, PREFIX + sessionId);
+
+        List<String> values = redis.opsForValue().multiGet(keys);
+        if (values == null || values.isEmpty()) {
+            return false;
+        }
+
+        String logoutTime = values.get(0);
+        if (logoutTime != null && issuedAtMillis < Long.parseLong(logoutTime)) {
+            return true;
+        }
+
+        // sessionId null = token phát hành trước khi có claim "sid" -> không chặn, tránh đá văng
+        // những phiên đang đăng nhập hợp lệ ngay lúc triển khai bản mới.
+        return sessionId != null && values.size() > 1 && values.get(1) == null;
     }
 }

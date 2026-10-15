@@ -7,10 +7,6 @@ import org.springframework.http.HttpStatus;
 @Getter
 @RequiredArgsConstructor
 public enum ErrorCode {
-    // 2xx - Success
-    SUCCESS(200, "Success", HttpStatus.OK),
-    CREATED(201, "Created", HttpStatus.CREATED),
-
     // 4xx - Client Errors
     BAD_REQUEST(400, "Bad Request", HttpStatus.BAD_REQUEST),
     UNAUTHORIZED(401, "Unauthorized", HttpStatus.UNAUTHORIZED),

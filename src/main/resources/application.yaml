@@ -28,6 +28,10 @@ spring:
       # Local để 'update', Deploy chuyển biến DDL_AUTO thành 'validate' hoặc 'none'
       ddl-auto: ${DDL_AUTO:update}
     show-sql: ${SHOW_SQL:false}
+    # Mặc định của Boot là true: giữ session Hibernate sống tới tận lúc ghi response. Nghe thì
+    # tiện, nhưng nó giam connection suốt vòng đời request và che mất lỗi lazy — code sai vẫn
+    # chạy ngon ở máy dev rồi vỡ khi lên thật. Tắt đi để lỗi lộ ra ngay tại chỗ sai.
+    open-in-view: false
     properties:
       hibernate:
         format_sql: false
@@ -83,6 +87,11 @@ spring:
 # CẤU HÌNH HỆ THỐNG DÙNG CHUNG (CORE APP)
 # ==========================================
 app:
+  # Tạo sẵn role ADMIN/USER + 2 tài khoản demo lúc khởi động. Deploy thật thì đặt false.
+  data-init:
+    enabled: ${DATA_INIT_ENABLED:true}
+    admin-password: ${DATA_INIT_ADMIN_PASSWORD:Admin@12345}
+    user-password: ${DATA_INIT_USER_PASSWORD:User@12345}
   api:
     version: 1.0.0
     description: Core Backend Service APIs
@@ -90,8 +99,23 @@ app:
     allowed-origins:
       - ${FRONTEND_BASE_URL:http://localhost:5173}
   security:
-    whitelist: "/categories,/categories/**,/products,/products/**,/accounts,/accounts/**,/roles,/roles/**"
+    # Sai quá max-attempts lần trong lock-duration -> khoá tạm, trả 429
+    login-attempt:
+      max-attempts: ${LOGIN_MAX_ATTEMPTS:5}
+      # Ngưỡng theo IP nới hơn hẳn ngưỡng theo username: một văn phòng / mạng di động đi chung NAT
+      # thì rất nhiều người thật cùng ra một IP, siết chặt là chặn nhầm người dùng hợp lệ.
+      max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
+      lock-duration: ${LOGIN_LOCK_DURATION:15m}
+    whitelist: "/auth/**,/categories,/categories/**,/products,/products/**,/accounts,/accounts/**,/roles,/roles/**"
       # - /oauth2/**
+  # ==========================================
+  # QUY TẮC ĐẶT HÀNG
+  # ==========================================
+  order:
+    # Phí ship mặc định. Miễn phí khi chuyển khoản hoặc khi đơn đạt ngưỡng bên dưới.
+    shipping-fee: ${ORDER_SHIPPING_FEE:30000}
+    free-shipping-threshold: ${ORDER_FREE_SHIPPING_THRESHOLD:1000000}
+
   jwt:
     secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
     access-ttl: ${JWT_ACCESS_TTL:15m}
@@ -140,6 +164,12 @@ management:
   health:
     defaults:
       enabled: true
+    # Spring Boot thấy driver Mongo trong classpath là tự bật MongoHealthIndicator, mà dự án
+    # không dùng Mongo ⇒ /actuator/health luôn DOWN và k8s sẽ liên tục restart pod đang khoẻ.
+    # Tên khoá là "mongodb", KHÔNG phải "mongo": Boot 4.0 đã đổi (gh-47050) và đánh dấu khoá cũ
+    # ở mức "error" — viết "mongo" thì Spring bỏ qua im lặng, health check vẫn chạy như thường.
+    mongodb:
+      enabled: false
 
 # ==========================================
 # (OPTIONAL) CÁC DỊCH VỤ NGOÀI - MỞ COMMENT KHI SỬ DỤNG

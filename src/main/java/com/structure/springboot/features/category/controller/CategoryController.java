@@ -1,17 +1,24 @@
 package com.structure.springboot.features.category.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
+import com.structure.springboot.common.util.SortWhitelist;
+import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.category.dto.request.CategoryRequest;
+import com.structure.springboot.features.category.dto.request.CategoryUpdateRequest;
 import com.structure.springboot.features.category.dto.response.CategoryResponse;
 import com.structure.springboot.features.category.service.CategoryService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -36,10 +43,14 @@ public class CategoryController {
         );
     }
 
-    @PutMapping("/{id}")
+    /**
+     * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
+     * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
+     */
+    @PatchMapping("/{id}")
     public ResponseEntity<ApiResponse<CategoryResponse>> updateCategory(
             @PathVariable UUID id,
-            @Valid @RequestBody CategoryRequest requestDTO,
+            @Valid @RequestBody CategoryUpdateRequest requestDTO,
             HttpServletRequest request) {
 
         return ResponseEntity.ok(
@@ -82,15 +93,26 @@ public class CategoryController {
         );
     }
 
+    /**
+     * Phân trang qua query param {@code ?page=0&size=20&sort=createdAt,desc}.
+     * {@code @PageableDefault} chốt sẵn cỡ trang và thứ tự để client không gửi gì vẫn có kết quả
+     * ổn định — thiếu {@code sort} thì DB được tự do trả thứ tự tuỳ ý, trang 2 có thể lặp lại
+     * bản ghi đã thấy ở trang 1.
+     */
     @GetMapping
-    public ResponseEntity<ApiResponse<List<CategoryResponse>>> getAllCategories(
+    public ResponseEntity<ApiResponse<PageResponse<CategoryResponse>>> getAllCategories(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
             HttpServletRequest request) {
 
+        SortWhitelist.check(pageable.getSort(), Set.of("name", "createdAt"));
+
         return ResponseEntity.ok(
-                ApiResponse.<List<CategoryResponse>>builder()
+                ApiResponse.<PageResponse<CategoryResponse>>builder()
                         .code(HttpStatus.OK.value())
                         .message("Categories retrieved successfully")
-                        .result(categoryService.getAllCategories())
+                        .result(categoryService.getAllCategories(pageable))
                         .path(request.getRequestURI())
                         .build()
         );

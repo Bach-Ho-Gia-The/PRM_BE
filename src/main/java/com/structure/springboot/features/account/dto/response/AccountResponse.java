@@ -7,6 +7,7 @@ public record AccountResponse(
         UUID id,
         String username,
         String email,
+        UUID roleId,
         String roleName,
         Instant createdAt,
         Instant updatedAt
