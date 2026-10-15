@@ -10,11 +10,6 @@ import jakarta.validation.constraints.Size;
 import java.util.UUID;
 
 public record AccountRequest(
-        @NotBlank(message = "Username is required")
-        @Size(max = 50, message = "Username must not exceed 50 characters")
-        @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)
-        String username,
-
         @NotBlank(message = "Email is required")
         @Email(message = "Email must be valid")
         @Size(max = 100, message = "Email must not exceed 100 characters")

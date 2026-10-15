@@ -10,12 +10,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -34,22 +33,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtService jwtService;
     private final RefreshTokenRedis refreshTokenRedis;
     private final HandlerExceptionResolver handlerExceptionResolver;
+    private final AuthCookieProperties cookieProperties;
+    private final AuthCookieFactory authCookieFactory;
 
-    // Đọc động từ application.yaml -> theo sát biến môi trường .env
-    @Value("${app.auth.cookie.access-token-name:access_token}")
-    private String accessTokenName;
+    // Endpoint công khai của module auth (login/refresh/logout) phải được bỏ qua filter này.
+    // Lý do: cookie access_token có path "/" nên trình duyệt gửi kèm MỌI request; nếu token đã hết hạn
+    // thì filter sẽ ném 401 ngay tại /auth/login khiến người dùng không thể đăng nhập lại.
+    private static final String AUTH_PATH_PREFIX = "/auth/";
 
-    @Value("${app.auth.cookie.refresh-token-name:refresh_token}")
-    private String refreshTokenName;
-
-    @Value("${app.auth.cookie.secure:false}")
-    private boolean cookieSecure;
-
-    @Value("${app.auth.cookie.same-site:Lax}")
-    private String cookieSameSite;
-
-    @Value("${app.auth.cookie.path:/}")
-    private String cookiePath;
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String contextPath = request.getContextPath();
+        String path = request.getRequestURI().substring(contextPath != null ? contextPath.length() : 0);
+        return path.startsWith(AUTH_PATH_PREFIX);
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -71,19 +68,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                 String email = claims.getSubject();
 
-                // 3. Kiểm tra token có bị thu hồi do logout / đổi mật khẩu chưa
-                if (email != null) {
-                    Long logoutTime = refreshTokenRedis.getLogoutTime(email);
-                    if (logoutTime != null && claims.getIssuedAt() != null) {
-                        if (claims.getIssuedAt().getTime() < logoutTime) {
-                            throw new ApiException(ErrorCode.UNAUTHORIZED, "Token has been revoked due to logout or password reset.");
-                        }
-                    }
+                // 3. Kiểm tra token đã bị thu hồi chưa (logout phiên / logout-all / đổi mật khẩu).
+                //    Gộp cả hai điều kiện vào một lần gọi Redis để không làm chậm mọi request.
+                long issuedAt = claims.getIssuedAt() != null ? claims.getIssuedAt().getTime() : 0L;
+                if (email != null
+                        && refreshTokenRedis.isAccessTokenRevoked(email, claims.get("sid", String.class), issuedAt)) {
+                    throw new ApiException(ErrorCode.UNAUTHORIZED, "Session has been revoked. Please sign in again.");
                 }
 
                 // 4. Bóc tách Role và UID trực tiếp từ Token (Không query DB)
                 String scope = claims.get("scope", String.class);
-                String uid = claims.get("uid", String.class);
 
                 List<SimpleGrantedAuthority> authorities = List.of();
                 if (StringUtils.hasText(scope)) {
@@ -92,10 +86,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                             .collect(Collectors.toList());
                 }
 
-                // 5. Nạp danh tính vào SecurityContext
+                // 5. Nạp danh tính vào SecurityContext.
+                //    Principal là AuthenticatedUser (mang cả id lẫn email) thay vì chuỗi email trần,
+                //    nhờ vậy controller lấy được id người đăng nhập qua @AuthenticationPrincipal
+                //    mà không phải bóc token lần nữa. getName() vẫn trả về email như cũ.
+                AuthenticatedUser principal = AuthenticatedUser.of(claims.get("uid", String.class), email);
+
                 UsernamePasswordAuthenticationToken authentication =
-                        new UsernamePasswordAuthenticationToken(email, null, authorities);
-                authentication.setDetails(uid);
+                        new UsernamePasswordAuthenticationToken(principal, null, authorities);
+
+                //    details để đúng thứ Spring quy ước: IP + session id của request, phục vụ audit.
+                authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
                 SecurityContextHolder.getContext().setAuthentication(authentication);
 
@@ -121,7 +122,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (request.getCookies() != null) {
             for (Cookie cookie : request.getCookies()) {
-                if (accessTokenName.equals(cookie.getName()) && StringUtils.hasText(cookie.getValue())) {
+                if (cookieProperties.accessTokenName().equals(cookie.getName()) && StringUtils.hasText(cookie.getValue())) {
                     return cookie.getValue();
                 }
             }
@@ -130,24 +131,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void clearAuthCookies(HttpServletResponse response) {
-        // Tự động ăn theo biến môi trường: Local là false/Lax, Deploy là true/None
-        ResponseCookie clearAccess = ResponseCookie.from(accessTokenName, "")
-                .path(cookiePath)
-                .maxAge(0)
-                .httpOnly(true)
-                .secure(cookieSecure)
-                .sameSite(cookieSameSite)
-                .build();
-
-        ResponseCookie clearRefresh = ResponseCookie.from(refreshTokenName, "")
-                .path(cookiePath) // Refresh token thường giới hạn path ở endpoint auth
-                .maxAge(0)
-                .httpOnly(true)
-                .secure(cookieSecure)
-                .sameSite(cookieSameSite)
-                .build();
-
-        response.addHeader(HttpHeaders.SET_COOKIE, clearAccess.toString());
-        response.addHeader(HttpHeaders.SET_COOKIE, clearRefresh.toString());
+        // Dùng chung AuthCookieFactory với luồng login/logout -> cookie xoá luôn khớp
+        // chính xác tên, path, Secure, SameSite của cookie đã ghi ra.
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieFactory.clearAccessTokenCookie().toString());
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieFactory.clearRefreshTokenCookie().toString());
     }
 }

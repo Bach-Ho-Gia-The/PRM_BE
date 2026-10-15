@@ -30,29 +30,6 @@ public class ApiResponse<T> {
 
     private String path;
 
-    // Helper method: Trả về thành công 200 có dữ liệu
-    public static <T> ApiResponse<T> success(T result) {
-        return ApiResponse.<T>builder()
-                .code(200)
-                .message("Success")
-                .result(result)
-                .build();
-    }
-
-    // Helper method: Trả về thành công khi tạo mới 201
-    public static <T> ApiResponse<T> created(T result) {
-        return ApiResponse.<T>builder()
-                .code(201)
-                .message("Resource created successfully")
-                .result(result)
-                .build();
-    }
-
-    // Helper method: Trả về thành công chỉ có message (cho các action DELETE, UPDATE không cần body)
-    public static <T> ApiResponse<T> ok(String message) {
-        return ApiResponse.<T>builder()
-                .code(200)
-                .message(message)
-                .build();
-    }
+    // Không khai báo helper tĩnh (success/created/ok): chúng không nhận được "path" nên không thể
+    // thay thế builder, để lại chỉ khiến người sau phân vân giữa hai cách làm cùng một việc.
 }
