@@ -4,6 +4,8 @@ import com.structure.springboot.infrastructure.persistence.SoftDeletableEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import org.hibernate.annotations.ColumnDefault;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -35,4 +37,10 @@ public class CollectionEntity extends SoftDeletableEntity {
     /** URL ảnh bìa có thể để trống; upload file sẽ là luồng riêng trả về URL. */
     @Column(name = "cover_image_url", length = 500)
     private String coverImageUrl;
+
+    /** Chặn màn hình quản trị cũ ghi đè thay đổi mới, kể cả khi chỉ sửa sản phẩm liên kết. */
+    @Version
+    @ColumnDefault("0")
+    @Column(name = "version", nullable = false)
+    private Long version;
 }
