@@ -1,17 +1,23 @@
 package com.structure.springboot.features.role.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
+import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.role.dto.request.RoleRequest;
+import com.structure.springboot.features.role.dto.request.RoleUpdateRequest;
 import com.structure.springboot.features.role.dto.response.RoleResponse;
 import com.structure.springboot.features.role.service.RoleService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -21,6 +27,7 @@ public class RoleController {
 
     private final RoleService roleService;
 
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<ApiResponse<RoleResponse>> createRole(
             @Valid @RequestBody RoleRequest requestDTO,
@@ -36,10 +43,15 @@ public class RoleController {
         );
     }
 
-    @PutMapping("/{id}")
+    /**
+     * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
+     * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/{id}")
     public ResponseEntity<ApiResponse<RoleResponse>> updateRole(
             @PathVariable UUID id,
-            @Valid @RequestBody RoleRequest requestDTO,
+            @Valid @RequestBody RoleUpdateRequest requestDTO,
             HttpServletRequest request) {
 
         return ResponseEntity.ok(
@@ -52,6 +64,7 @@ public class RoleController {
         );
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteRole(
             @PathVariable UUID id,
@@ -67,6 +80,7 @@ public class RoleController {
         );
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<RoleResponse>> getRoleById(
             @PathVariable UUID id,
@@ -82,15 +96,25 @@ public class RoleController {
         );
     }
 
+    /**
+     * Phân trang qua query param {@code ?page=0&size=20&sort=createdAt,desc}.
+     * {@code @PageableDefault} chốt sẵn cỡ trang và thứ tự để client không gửi gì vẫn có kết quả
+     * ổn định — thiếu {@code sort} thì DB được tự do trả thứ tự tuỳ ý, trang 2 có thể lặp lại
+     * bản ghi đã thấy ở trang 1.
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping
-    public ResponseEntity<ApiResponse<List<RoleResponse>>> getAllRoles(
+    public ResponseEntity<ApiResponse<PageResponse<RoleResponse>>> getAllRoles(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
             HttpServletRequest request) {
 
         return ResponseEntity.ok(
-                ApiResponse.<List<RoleResponse>>builder()
+                ApiResponse.<PageResponse<RoleResponse>>builder()
                         .code(HttpStatus.OK.value())
                         .message("Roles retrieved successfully")
-                        .result(roleService.getAllRoles())
+                        .result(roleService.getAllRoles(pageable))
                         .path(request.getRequestURI())
                         .build()
         );

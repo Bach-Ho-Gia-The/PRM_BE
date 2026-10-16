@@ -24,7 +24,11 @@ public class JwtService {
         this.key = Keys.hmacShaKeyFor(props.secret().getBytes(StandardCharsets.UTF_8));
     }
 
-    public String generateAccessToken(String userId, String email, Collection<String> authorities) {
+    /**
+     * @param sessionId jti của refresh token cùng phiên. Nhúng vào claim {@code sid} để khi phiên
+     *                  bị logout thì access token chết theo ngay, không sống hết 15 phút.
+     */
+    public String generateAccessToken(String userId, String email, Collection<String> authorities, String sessionId) {
         Instant now = Instant.now();
         Instant exp = now.plus(props.getAccessTtlMs(), ChronoUnit.MILLIS);
 
@@ -35,7 +39,7 @@ public class JwtService {
                 .claim("uid", userId)
                 .claim("typ", "access")
                 .claim("scope", scope)
-                .claim("email", email)
+                .claim("sid", sessionId)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(exp))
                 .signWith(key, Jwts.SIG.HS256)

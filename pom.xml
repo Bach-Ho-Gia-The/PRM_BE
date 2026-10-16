@@ -38,6 +38,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        <!-- Xác minh ID token của Google: NimbusJwtDecoder + tải/cache JWKS. Dùng module của
+             chính Spring Security thay vì SDK google-api-client để không kéo thêm gson vào
+             cạnh Jackson đang dùng. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -86,16 +93,6 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Database Migration -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-database-postgresql</artifactId>
-        </dependency>
-
         <!-- Docker Compose Support (Dev/Test) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -129,6 +126,27 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            Testcontainers: dựng PostgreSQL + Redis thật bằng Docker ngay trong lúc chạy test,
+            thay cho H2/embedded (H2 không có kiểu UUID/JSONB và phương ngữ SQL khác Postgres,
+            test xanh ở H2 vẫn có thể đỏ khi lên thật). Toàn bộ ở scope test nên KHÔNG đi vào
+            file JAR sản phẩm. Phiên bản do spring-boot-dependencies quản lý.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

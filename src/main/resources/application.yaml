@@ -28,6 +28,10 @@ spring:
       # Local để 'update', Deploy chuyển biến DDL_AUTO thành 'validate' hoặc 'none'
       ddl-auto: ${DDL_AUTO:update}
     show-sql: ${SHOW_SQL:false}
+    # Mặc định của Boot là true: giữ session Hibernate sống tới tận lúc ghi response. Nghe thì
+    # tiện, nhưng nó giam connection suốt vòng đời request và che mất lỗi lazy — code sai vẫn
+    # chạy ngon ở máy dev rồi vỡ khi lên thật. Tắt đi để lỗi lộ ra ngay tại chỗ sai.
+    open-in-view: false
     properties:
       hibernate:
         format_sql: false
@@ -61,45 +65,56 @@ spring:
   # mongodb:
   #   uri: ${MONGODB_URI:mongodb://localhost:27017/app_chat}
 
-  # ==========================================
-  # (OPTIONAL) OAUTH2 GOOGLE - Mở comment khi cần Login Google
-  # ==========================================
-  # security:
-  #   oauth2:
-  #     client:
-  #       registration:
-  #         google:
-  #           client-id: ${GOOGLE_CLIENT_ID}
-  #           client-secret: ${GOOGLE_CLIENT_SECRET}
-  #           scope:
-  #             - openid
-  #             - email
-  #             - profile
-  #       provider:
-  #         google:
-  #           authorization-uri: https://accounts.google.com/o/oauth2/v2/auth?prompt=select_account
+  # Không cấu hình spring.security.oauth2.client: dự án đi đường "frontend lấy ID token rồi
+  # gửi về backend" (POST /auth/google), backend không tham gia luồng redirect nên không cần
+  # client-secret lẫn registration. Client ID nằm ở app.auth.google.client-id bên dưới.
 
 # ==========================================
 # CẤU HÌNH HỆ THỐNG DÙNG CHUNG (CORE APP)
 # ==========================================
 app:
+  account:
+    # Khoảng chờ giữa hai lần đổi mật khẩu THÀNH CÔNG của cùng một tài khoản. Mỗi lần đổi đều
+    # gửi mail báo tin và đá mọi thiết bị, không hãm lại là biến chức năng này thành vũ khí.
+    # Không áp cho luồng quên mật khẩu — đường đó đã có cooldown OTP riêng.
+    password-change-cooldown: ${PASSWORD_CHANGE_COOLDOWN:5m}
+
+  # Tạo sẵn role ADMIN/USER + 2 tài khoản demo lúc khởi động. Deploy thật thì đặt false.
+  data-init:
+    enabled: ${DATA_INIT_ENABLED:true}
+    admin-password: ${DATA_INIT_ADMIN_PASSWORD:Admin@12345}
+    user-password: ${DATA_INIT_USER_PASSWORD:User@12345}
   api:
     version: 1.0.0
     description: Core Backend Service APIs
   cors:
-    allowed-origins:
-      - ${FRONTEND_BASE_URL:http://localhost:5173}
+    # ⚠ PHẢI là chuỗi MỘT DÒNG ngăn bằng dấu phẩy, KHÔNG được viết thành list YAML.
+    # SecurityConfig đọc bằng @Value, mà @Value không nhìn thấy list YAML: list bị tách thành
+    # các khoá đánh chỉ số allowed-origins[0], allowed-origins[1]... nên khoá allowed-origins
+    # không tồn tại và placeholder âm thầm rơi về giá trị mặc định -> FRONTEND_BASE_URL bị bỏ qua
+    # hoàn toàn. Local vẫn chạy vì mặc định có sẵn localhost, lỗi chỉ nổ đúng lúc deploy.
+    allowed-origins: ${FRONTEND_BASE_URL:http://localhost:5173,http://localhost:3000}
   security:
-    whitelist: "/categories,/categories/**,/products,/products/**,/accounts,/accounts/**,/roles,/roles/**"
-      # - /oauth2/**
+    # Sai quá max-attempts lần trong lock-duration -> khoá tạm, trả 429
+    login-attempt:
+      max-attempts: ${LOGIN_MAX_ATTEMPTS:5}
+      # Ngưỡng theo IP nới hơn hẳn ngưỡng theo username: một văn phòng / mạng di động đi chung NAT
+      # thì rất nhiều người thật cùng ra một IP, siết chặt là chặn nhầm người dùng hợp lệ.
+      max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
+      lock-duration: ${LOGIN_LOCK_DURATION:15m}
+    whitelist: "/auth/**,/categories,/categories/**,/products,/products/**"
+  # ==========================================
+  # QUY TẮC ĐẶT HÀNG
+  # ==========================================
+  order:
+    # Phí ship mặc định. Miễn phí khi chuyển khoản hoặc khi đơn đạt ngưỡng bên dưới.
+    shipping-fee: ${ORDER_SHIPPING_FEE:30000}
+    free-shipping-threshold: ${ORDER_FREE_SHIPPING_THRESHOLD:1000000}
+
   jwt:
     secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
     access-ttl: ${JWT_ACCESS_TTL:15m}
     refresh-ttl: ${JWT_REFRESH_TTL:7d}
-  frontend:
-    base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
-  # oauth2:
-  #   frontend-callback-url: ${FRONTEND_CALLBACK_URL:http://localhost:5173/oauth2/callback}
   auth:
     cookie:
       access-token-name: ${AUTH_ACCESS_COOKIE_NAME:access_token}
@@ -109,6 +124,19 @@ app:
       # Local: Lax | Deploy: None (nếu FE và BE khác domain)
       same-site: ${AUTH_COOKIE_SAME_SITE:Lax}
       path: ${AUTH_COOKIE_PATH:/}
+    # Đăng nhập Google. Chỉ cần client-id (để kiểm claim "aud"), KHÔNG cần client-secret vì
+    # frontend tự lấy ID token rồi gửi về, backend không tham gia luồng redirect của OAuth2.
+    google:
+      client-id: ${GOOGLE_CLIENT_ID:}
+  # Mã OTP khôi phục mật khẩu. ttl ngắn vì mã 6 số chỉ có 10^6 tổ hợp; max-attempts mới là
+  # thứ chặn dò thật sự, còn verified-ttl là hạn của "vé tạm" cấp sau khi nhập đúng mã.
+  otp:
+    ttl-seconds: ${OTP_TTL_SECONDS:90}
+    max-attempts: ${OTP_MAX_ATTEMPTS:5}
+    verified-ttl-seconds: ${OTP_VERIFIED_TTL_SECONDS:300}
+    max-sends-per-hour: ${OTP_MAX_SENDS_PER_HOUR:5}
+    register-ttl-seconds: ${OTP_REGISTER_TTL_SECONDS:600}
+    resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:20}
 
 # ==========================================
 # TÀI LIỆU API (SWAGGER / OPENAPI)
@@ -140,6 +168,12 @@ management:
   health:
     defaults:
       enabled: true
+    # Spring Boot thấy driver Mongo trong classpath là tự bật MongoHealthIndicator, mà dự án
+    # không dùng Mongo ⇒ /actuator/health luôn DOWN và k8s sẽ liên tục restart pod đang khoẻ.
+    # Tên khoá là "mongodb", KHÔNG phải "mongo": Boot 4.0 đã đổi (gh-47050) và đánh dấu khoá cũ
+    # ở mức "error" — viết "mongo" thì Spring bỏ qua im lặng, health check vẫn chạy như thường.
+    mongodb:
+      enabled: false
 
 # ==========================================
 # (OPTIONAL) CÁC DỊCH VỤ NGOÀI - MỞ COMMENT KHI SỬ DỤNG
@@ -149,21 +183,17 @@ management:
 #     host: ${SOCKET_SERVER_HOST:0.0.0.0}
 #     port: ${SOCKET_SERVER_PORT:9092}
 
-# otp:
-#   ttl-seconds: ${OTP_TTL_SECONDS:90}
-#   max-attempts: ${OTP_MAX_ATTEMPTS:5}
-#   verified-ttl-seconds: ${OTP_VERIFIED_TTL_SECONDS:300}
-
 # supabase:
 #   url: ${SUPABASE_URL:}
 #   anon-key: ${SUPABASE_ANON_KEY:}
 #   service-key: ${SUPABASE_SERVICE_KEY:}
 
-# brevo:
-#   api-key: ${BREVO_API_KEY:}
-#   sender:
-#     email: ${BREVO_SENDER_EMAIL:no-reply@example.com}
-#     name: ${BREVO_SENDER_NAME:System}
+# Gửi email giao dịch (OTP quên mật khẩu). Chưa đặt BREVO_API_KEY thì endpoint quên mật khẩu
+# trả 503 chứ không im lặng nuốt lỗi.
+brevo:
+  api-key: ${BREVO_API_KEY:}
+  sender-email: ${BREVO_SENDER_EMAIL:no-reply@example.com}
+  sender-name: ${BREVO_SENDER_NAME:La Boutique}
 
 # anything-llm:
 #   base-url: ${ANYTHING_LLM_BASE_URL:http://localhost:3001/api}
