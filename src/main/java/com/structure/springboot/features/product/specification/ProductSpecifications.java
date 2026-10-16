@@ -41,7 +41,7 @@ public final class ProductSpecifications {
     /** Lọc theo slug danh mục ({@code ?category=ao}) — FE không cầm UUID của danh mục. */
     public static Specification<ProductEntity> hasCategorySlug(String categorySlug) {
         if (!StringUtils.hasText(categorySlug)) {
-            return null;
+            return Specification.unrestricted();
         }
         String normalized = categorySlug.trim().toLowerCase(Locale.ROOT);
         return (root, query, cb) -> cb.equal(cb.lower(root.get("category").get("slug")), normalized);
@@ -49,7 +49,7 @@ public final class ProductSpecifications {
 
     public static Specification<ProductEntity> hasCollection(ProductCollection collection) {
         return collection == null
-                ? null
+                ? Specification.unrestricted()
                 : (root, query, cb) -> cb.equal(root.get("collection"), collection);
     }
 
@@ -59,7 +59,7 @@ public final class ProductSpecifications {
      */
     public static Specification<ProductEntity> matchesKeyword(String keyword) {
         if (!StringUtils.hasText(keyword)) {
-            return null;
+            return Specification.unrestricted();
         }
         String pattern = "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%";
         return (root, query, cb) -> cb.or(
@@ -70,19 +70,19 @@ public final class ProductSpecifications {
 
     public static Specification<ProductEntity> priceAtLeast(BigDecimal minPrice) {
         return minPrice == null
-                ? null
+                ? Specification.unrestricted()
                 : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("price"), minPrice);
     }
 
     public static Specification<ProductEntity> priceAtMost(BigDecimal maxPrice) {
         return maxPrice == null
-                ? null
+                ? Specification.unrestricted()
                 : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("price"), maxPrice);
     }
 
     public static Specification<ProductEntity> isFeatured(Boolean featured) {
         return featured == null
-                ? null
+                ? Specification.unrestricted()
                 : (root, query, cb) -> cb.equal(root.get("isFeatured"), featured);
     }
 }
