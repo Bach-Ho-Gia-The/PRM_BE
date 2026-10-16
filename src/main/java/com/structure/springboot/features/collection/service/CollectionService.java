@@ -6,12 +6,14 @@ import com.structure.springboot.features.collection.dto.request.CollectionProduc
 import com.structure.springboot.features.collection.dto.request.CollectionUpdateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
 import com.structure.springboot.features.collection.dto.response.CollectionDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicSummaryResponse;
 import com.structure.springboot.features.collection.dto.response.CollectionSummaryResponse;
 import org.springframework.data.domain.Pageable;
 
 import java.util.UUID;
 
-/** Các thao tác quản trị BST; API công khai sẽ được tách ở task 2C. */
+/** Thao tác quản trị và truy vấn BST công khai. */
 public interface CollectionService {
 
     CollectionDetailResponse createCollection(CollectionCreateRequest request);
@@ -22,4 +24,6 @@ public interface CollectionService {
     void deleteCollection(UUID id, long expectedVersion);
     CollectionDetailResponse getCollectionById(UUID id);
     PageResponse<CollectionSummaryResponse> getAllCollections(Pageable pageable);
+    PageResponse<CollectionPublicSummaryResponse> getPublicCollections(Pageable pageable);
+    CollectionPublicDetailResponse getPublicCollectionBySlug(String slug, Pageable pageable);
 }

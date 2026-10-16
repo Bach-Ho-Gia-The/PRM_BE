@@ -4,11 +4,14 @@ import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.util.SlugUtils;
+import com.structure.springboot.common.util.SortWhitelist;
 import com.structure.springboot.features.collection.dto.request.CollectionCreateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionProductsRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionUpdateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
 import com.structure.springboot.features.collection.dto.response.CollectionDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicSummaryResponse;
 import com.structure.springboot.features.collection.dto.response.CollectionSummaryResponse;
 import com.structure.springboot.features.collection.entity.CollectionEntity;
 import com.structure.springboot.features.collection.entity.CollectionProductEntity;
@@ -16,6 +19,7 @@ import com.structure.springboot.features.collection.mapper.CollectionMapper;
 import com.structure.springboot.features.collection.repository.CollectionProductRepository;
 import com.structure.springboot.features.collection.repository.CollectionRepository;
 import com.structure.springboot.features.collection.service.CollectionService;
+import com.structure.springboot.features.collection.specification.CollectionSpecifications;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
@@ -23,7 +27,9 @@ import com.structure.springboot.infrastructure.persistence.StatusSpecifications;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +51,8 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class CollectionServiceImpl implements CollectionService {
+
+    private static final Set<String> COLLECTION_SORT_FIELDS = Set.of("collectionName", "slug", "createdAt", "updatedAt");
 
     private final CollectionRepository collectionRepository;
     private final CollectionProductRepository collectionProductRepository;
@@ -202,9 +210,45 @@ public class CollectionServiceImpl implements CollectionService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<CollectionSummaryResponse> getAllCollections(Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), COLLECTION_SORT_FIELDS);
         return PageResponse.from(collectionRepository
                 .findAll(StatusSpecifications.<CollectionEntity>notDeleted(), pageable)
                 .map(collectionMapper::toSummaryResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<CollectionPublicSummaryResponse> getPublicCollections(Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), COLLECTION_SORT_FIELDS);
+        return PageResponse.from(collectionRepository
+                .findAll(CollectionSpecifications.publiclyVisible(), pageable)
+                .map(collectionMapper::toPublicSummaryResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CollectionPublicDetailResponse getPublicCollectionBySlug(String slug, Pageable pageable) {
+        // Trang Product có một thứ tự nghiệp vụ duy nhất, không phụ thuộc sort do client tự chọn.
+        SortWhitelist.check(pageable.getSort(), Set.of("sortOrder", "id"));
+        if (pageable.getSort().isSorted()
+                && (!pageable.getSort().iterator().next().getProperty().equals("sortOrder")
+                    || pageable.getSort().stream().anyMatch(order -> order.getDirection() != Sort.Direction.ASC))) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Collection products must follow the admin-defined order");
+        }
+        // Kiểm tra cả status và tồn tại Product hiển thị, không dùng số phần tử của trang yêu cầu:
+        // page vượt phạm vi vẫn trả chi tiết BST + trang rỗng, BST thực sự rỗng mới trả 404.
+        CollectionEntity collection = collectionRepository.findOne(
+                        CollectionSpecifications.publiclyVisible().and(CollectionSpecifications.hasSlug(slug)))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Collection not found with slug: " + slug));
+        Pageable orderedPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(),
+                Sort.by(Sort.Order.asc("sortOrder"), Sort.Order.asc("id")));
+        var products = PageResponse.from(collectionProductRepository
+                .findAll(CollectionSpecifications.visibleProductsOf(collection.getId()), orderedPage)
+                .map(collectionMapper::toPublicProductResponse));
+        return new CollectionPublicDetailResponse(
+                collection.getId(), collection.getCollectionName(), collection.getSlug(),
+                collection.getCoverImageUrl(), products);
     }
 
     private CollectionEntity requireManageable(UUID id) {

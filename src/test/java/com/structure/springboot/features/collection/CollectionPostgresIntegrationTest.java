@@ -6,6 +6,7 @@ import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.features.category.repository.CategoryRepository;
 import com.structure.springboot.features.collection.dto.request.CollectionCreateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionProductsRequest;
+import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
 import com.structure.springboot.features.collection.repository.CollectionProductRepository;
 import com.structure.springboot.features.collection.repository.CollectionRepository;
 import com.structure.springboot.features.collection.service.CollectionService;
@@ -89,7 +90,7 @@ class CollectionPostgresIntegrationTest {
                 .filter(row -> row.id().equals(created.id())).findFirst().orElseThrow().version());
 
         var mvc = MockMvcBuilders.webAppContextSetup(webContext).apply(springSecurity()).build();
-        String detailPath = "/api/v1/collections/" + created.id();
+        String detailPath = "/api/v1/collections/admin/" + created.id();
         // Web khác origin dùng Authorization + Content-Type; không còn cần version header riêng.
         mvc.perform(options(detailPath + "/products").contextPath("/api/v1")
                         .header("Origin", "http://localhost:5173")
@@ -200,6 +201,157 @@ class CollectionPostgresIntegrationTest {
                 .noneMatch(row -> row.id().equals(created.id())));
         assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
                 () -> collectionService.getCollectionById(created.id())).getErrorCode());
+    }
+
+    @Test
+    void publicListIsPagedAndNeverLeaksDraftsOrHiddenProducts() throws Exception {
+        long baseline = collectionService.getPublicCollections(PageRequest.of(0, 1)).totalElements();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        // Ẩn Category chỉ ẩn mục duyệt theo Category, không ẩn Product khỏi BST.
+        CategoryEntity category = categoryRepository.save(CategoryEntity.builder()
+                .categoryName("Public list " + suffix)
+                .slug("public-list-" + suffix)
+                .status(RecordStatus.HIDDEN)
+                .build());
+        ProductEntity product = createProduct(category, suffix, "public", RecordStatus.ACTIVE);
+        var published = collectionService.createCollection(new CollectionCreateRequest(
+                "Public " + suffix, "public-" + suffix, null, List.of(product.getId())));
+        var draft = collectionService.createCollection(new CollectionCreateRequest(
+                "Draft " + suffix, "draft-" + suffix, null, List.of(product.getId())));
+        assertEquals(baseline, collectionService.getPublicCollections(PageRequest.of(0, 1)).totalElements());
+
+        collectionService.publishCollection(published.id(), new CollectionVersionRequest(0L));
+        var visiblePage = collectionService.getPublicCollections(PageRequest.of(0, 1));
+        assertEquals(baseline + 1, visiblePage.totalElements());
+        assertEquals(1, visiblePage.size());
+
+        var mvc = MockMvcBuilders.webAppContextSetup(webContext).apply(springSecurity()).build();
+        String publicPath = "/api/v1/collections";
+        String adminPath = "/api/v1/collections/admin";
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("size", "200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.totalElements").value((int) (baseline + 1)))
+                .andExpect(jsonPath("$.result.content[0].status").doesNotExist())
+                .andExpect(jsonPath("$.result.content[0].version").doesNotExist());
+        mvc.perform(get(publicPath).contextPath("/api/v1")
+                        .with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.totalElements").value((int) (baseline + 1)))
+                .andExpect(jsonPath("$.result.content[0].status").doesNotExist());
+        mvc.perform(get(adminPath).contextPath("/api/v1"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get(adminPath).contextPath("/api/v1").with(user("viewer").roles("USER")))
+                .andExpect(status().isForbidden());
+        mvc.perform(get(adminPath).contextPath("/api/v1").with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk());
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("sort", "products.size,asc"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(adminPath).contextPath("/api/v1").queryParam("sort", "products.size,asc")
+                        .with(user("admin").roles("ADMIN")))
+                .andExpect(status().isBadRequest());
+        assertTrue(collectionService.getAllCollections(PageRequest.of(0, 200)).content().stream()
+                .anyMatch(row -> row.id().equals(draft.id())));
+
+        product.setStatus(RecordStatus.HIDDEN);
+        productRepository.saveAndFlush(product);
+        assertEquals(baseline, collectionService.getPublicCollections(PageRequest.of(0, 1)).totalElements());
+        assertEquals(RecordStatus.ACTIVE,
+                collectionRepository.findById(published.id()).orElseThrow().getStatus());
+
+        // Chỉ Product.status null được coi là hiển thị; BST chưa publish (status null) thì không.
+        product.setStatus(null);
+        productRepository.saveAndFlush(product);
+        assertEquals(baseline + 1, collectionService.getPublicCollections(PageRequest.of(0, 1)).totalElements());
+        var collection = collectionRepository.findById(published.id()).orElseThrow();
+        collection.setStatus(null);
+        collectionRepository.saveAndFlush(collection);
+        assertEquals(baseline, collectionService.getPublicCollections(PageRequest.of(0, 1)).totalElements());
+    }
+
+    @Test
+    void publicDetailFiltersProductsBeforePagingAndKeepsAdminLinksPrivate() throws Exception {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        CategoryEntity hiddenCategory = categoryRepository.save(CategoryEntity.builder()
+                .categoryName("Detail test " + suffix)
+                .slug("detail-cat-" + suffix)
+                .status(RecordStatus.HIDDEN)
+                .build());
+        ProductEntity first = createProduct(hiddenCategory, suffix, "first", RecordStatus.ACTIVE);
+        ProductEntity hidden = createProduct(hiddenCategory, suffix, "hidden", RecordStatus.ACTIVE);
+        ProductEntity legacy = createProduct(hiddenCategory, suffix, "legacy", RecordStatus.ACTIVE);
+        ProductEntity deleted = createProduct(hiddenCategory, suffix, "deleted", RecordStatus.ACTIVE);
+        String slug = "detail-" + suffix;
+        var created = collectionService.createCollection(new CollectionCreateRequest(
+                "Detail " + suffix, slug, "https://example.com/cover.jpg",
+                List.of(first.getId(), hidden.getId(), legacy.getId(), deleted.getId())));
+        assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
+                () -> collectionService.getPublicCollectionBySlug(slug, PageRequest.of(0, 1))).getErrorCode());
+        collectionService.publishCollection(created.id(), new CollectionVersionRequest(0L));
+        hidden.setStatus(RecordStatus.HIDDEN);
+        productRepository.saveAndFlush(hidden);
+        legacy.setStatus(null); // Product cũ vẫn hiển thị.
+        productRepository.saveAndFlush(legacy);
+        deleted.setStatus(RecordStatus.DELETED);
+        productRepository.saveAndFlush(deleted);
+
+        var firstPage = collectionService.getPublicCollectionBySlug(slug, PageRequest.of(0, 1));
+        assertEquals(created.id(), firstPage.id());
+        assertEquals("https://example.com/cover.jpg", firstPage.coverImageUrl());
+        assertEquals(2L, firstPage.products().totalElements());
+        assertEquals(first.getId(), firstPage.products().content().get(0).productId());
+        assertEquals(new BigDecimal("100000.00"), firstPage.products().content().get(0).price());
+        var secondPage = collectionService.getPublicCollectionBySlug(slug, PageRequest.of(1, 1));
+        assertEquals(legacy.getId(), secondPage.products().content().get(0).productId());
+        var beyondLastPage = collectionService.getPublicCollectionBySlug(slug, PageRequest.of(2, 1));
+        assertEquals(2L, beyondLastPage.products().totalElements());
+        assertTrue(beyondLastPage.products().content().isEmpty());
+        assertEquals(4, collectionService.getCollectionById(created.id()).products().size());
+
+        var mvc = MockMvcBuilders.webAppContextSetup(webContext).apply(springSecurity()).build();
+        String publicPath = "/api/v1/collections/slug/" + slug;
+        String adminPath = "/api/v1/collections/admin/" + created.id();
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("page", "0").queryParam("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.slug").value(slug))
+                .andExpect(jsonPath("$.result.status").doesNotExist())
+                .andExpect(jsonPath("$.result.version").doesNotExist())
+                .andExpect(jsonPath("$.result.products.totalElements").value(2))
+                .andExpect(jsonPath("$.result.products.content[0].productId").value(first.getId().toString()))
+                .andExpect(jsonPath("$.result.products.content[0].status").doesNotExist());
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("page", "1")
+                        .queryParam("size", "1").with(user("viewer").roles("USER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.products.content[0].productId").value(legacy.getId().toString()));
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("page", "2")
+                        .queryParam("size", "1").with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.products.totalElements").value(2))
+                .andExpect(jsonPath("$.result.products.content").isEmpty());
+        mvc.perform(get(publicPath).contextPath("/api/v1").queryParam("sort", "sortOrder,desc"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(adminPath).contextPath("/api/v1").with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.products.length()").value(4))
+                .andExpect(jsonPath("$.result.version").exists());
+        mvc.perform(get("/api/v1/collections/slug/missing-" + suffix).contextPath("/api/v1"))
+                .andExpect(status().isNotFound());
+
+        // Khi mọi Product ngừng hiển thị, BST vẫn ACTIVE cho admin nhưng ẩn hoàn toàn khỏi khách.
+        first.setStatus(RecordStatus.HIDDEN);
+        productRepository.saveAndFlush(first);
+        legacy.setStatus(RecordStatus.DELETED);
+        productRepository.saveAndFlush(legacy);
+        mvc.perform(get(publicPath).contextPath("/api/v1"))
+                .andExpect(status().isNotFound());
+        assertEquals(RecordStatus.ACTIVE,
+                collectionRepository.findById(created.id()).orElseThrow().getStatus());
+        first.setStatus(RecordStatus.ACTIVE);
+        productRepository.saveAndFlush(first);
+        mvc.perform(get(publicPath).contextPath("/api/v1"))
+                .andExpect(status().isOk());
+        collectionService.hideCollection(created.id(), new CollectionVersionRequest(1L));
+        mvc.perform(get(publicPath).contextPath("/api/v1"))
+                .andExpect(status().isNotFound());
     }
 
     @Test

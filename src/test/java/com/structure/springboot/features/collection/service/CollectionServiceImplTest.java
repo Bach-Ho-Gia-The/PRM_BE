@@ -23,7 +23,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mapstruct.factory.Mappers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -53,6 +59,80 @@ class CollectionServiceImplTest {
     void setUp() {
         CollectionMapper mapper = Mappers.getMapper(CollectionMapper.class);
         service = new CollectionServiceImpl(collectionRepository, collectionProductRepository, productRepository, mapper, entityManager);
+    }
+
+    @Test
+    void publicListUsesDatabaseSpecificationAndDoesNotReturnAdminFields() {
+        CollectionEntity collection = collection(RecordStatus.ACTIVE);
+        var pageable = PageRequest.of(0, 20);
+        when(collectionRepository.findAll(any(Specification.class), eq(pageable)))
+                .thenReturn(new PageImpl<>(List.of(collection), pageable, 1));
+
+        var page = service.getPublicCollections(pageable);
+
+        assertEquals(1, page.content().size());
+        assertEquals(1L, page.totalElements());
+        assertEquals(collection.getSlug(), page.content().get(0).slug());
+        verify(collectionRepository).findAll(any(Specification.class), eq(pageable));
+        verifyNoInteractions(collectionProductRepository, productRepository);
+    }
+
+    @Test
+    void collectionListsRejectUnknownSortFieldBeforeDatabaseAccess() {
+        var invalid = PageRequest.of(0, 20, Sort.by("products.size"));
+        assertEquals(ErrorCode.BAD_REQUEST, assertThrows(ApiException.class,
+                () -> service.getPublicCollections(invalid)).getErrorCode());
+        assertEquals(ErrorCode.BAD_REQUEST, assertThrows(ApiException.class,
+                () -> service.getAllCollections(invalid)).getErrorCode());
+        verifyNoInteractions(collectionRepository, collectionProductRepository, productRepository);
+    }
+
+    @Test
+    void publicDetailKeepsPageTotalsAndAdminDefinedProductOrder() {
+        CollectionEntity collection = collection(RecordStatus.ACTIVE);
+        ProductEntity product = product(RecordStatus.ACTIVE);
+        product.setPrice(new BigDecimal("150.00"));
+        var requested = PageRequest.of(1, 1); // Service áp thứ tự chuẩn kể cả khi caller không gửi sort.
+        var ordered = PageRequest.of(1, 1, Sort.by(Sort.Order.asc("sortOrder"), Sort.Order.asc("id")));
+        when(collectionRepository.findOne(any(Specification.class))).thenReturn(Optional.of(collection));
+        when(collectionProductRepository.findAll(any(Specification.class), eq(ordered)))
+                .thenReturn(new PageImpl<>(List.of(link(collection, product, 2)), ordered, 2));
+
+        var detail = service.getPublicCollectionBySlug(collection.getSlug(), requested);
+
+        assertEquals(collection.getSlug(), detail.slug());
+        assertEquals(2L, detail.products().totalElements());
+        assertEquals(1, detail.products().page());
+        assertEquals(product.getId(), detail.products().content().get(0).productId());
+        assertEquals(new BigDecimal("150.00"), detail.products().content().get(0).price());
+        verify(collectionProductRepository).findAll(any(Specification.class), eq(ordered));
+        verifyNoInteractions(productRepository);
+    }
+
+    @Test
+    void publicDetailRejectsSortOutsideAdminProductOrderBeforeDatabaseAccess() {
+        var invalidSorts = List.of(
+                PageRequest.of(0, 20, Sort.by(Sort.Order.desc("sortOrder"))),
+                PageRequest.of(0, 20, Sort.by("price")),
+                PageRequest.of(0, 20, Sort.by("id"))
+        );
+        for (var pageable : invalidSorts) {
+            ApiException error = assertThrows(ApiException.class,
+                    () -> service.getPublicCollectionBySlug("summer", pageable));
+            assertEquals(ErrorCode.BAD_REQUEST, error.getErrorCode());
+        }
+        verifyNoInteractions(collectionRepository, collectionProductRepository, productRepository, entityManager);
+    }
+
+    @Test
+    void publicDetailReturnsNotFoundWhenSlugIsNotPublishedOrHasNoVisibleProducts() {
+        when(collectionRepository.findOne(any(Specification.class))).thenReturn(Optional.empty());
+
+        var error = assertThrows(ApiException.class,
+                () -> service.getPublicCollectionBySlug("missing", PageRequest.of(0, 20)));
+
+        assertEquals(ErrorCode.NOT_FOUND, error.getErrorCode());
+        verifyNoInteractions(collectionProductRepository, productRepository);
     }
 
     @Test

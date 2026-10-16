@@ -2,12 +2,13 @@ package com.structure.springboot.features.collection.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
 import com.structure.springboot.common.response.PageResponse;
-import com.structure.springboot.common.util.SortWhitelist;
 import com.structure.springboot.features.collection.dto.request.CollectionCreateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionProductsRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionUpdateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
 import com.structure.springboot.features.collection.dto.response.CollectionDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicDetailResponse;
+import com.structure.springboot.features.collection.dto.response.CollectionPublicSummaryResponse;
 import com.structure.springboot.features.collection.dto.response.CollectionSummaryResponse;
 import com.structure.springboot.features.collection.service.CollectionService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,10 +32,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Set;
 import java.util.UUID;
 
-/** Một route /collections chung; 2B chỉ thêm method ADMIN, public sẽ bàn riêng ở 2C. */
+/** Một controller /collections: URL /admin cho quản trị, GET gốc cho cửa hàng. */
 @RestController
 @RequestMapping("/collections")
 @RequiredArgsConstructor
@@ -43,7 +43,7 @@ public class CollectionController {
     private final CollectionService collectionService;
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PostMapping
+    @PostMapping("/admin")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> createCollection(
             @Valid @RequestBody CollectionCreateRequest requestDTO,
             HttpServletRequest request) {
@@ -59,7 +59,7 @@ public class CollectionController {
 
     /** PATCH chỉ sửa metadata của BST HIDDEN; clearCoverImage=true gỡ ảnh bìa. */
     @PreAuthorize("hasRole('ADMIN')")
-    @PatchMapping("/{id}")
+    @PatchMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> updateCollection(
             @PathVariable UUID id,
             @Valid @RequestBody CollectionUpdateRequest requestDTO,
@@ -76,7 +76,7 @@ public class CollectionController {
 
     /** Thay toàn bộ danh sách theo thứ tự; không lưu từng thao tác kéo thả rời rạc. */
     @PreAuthorize("hasRole('ADMIN')")
-    @PutMapping("/{id}/products")
+    @PutMapping("/admin/{id}/products")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> replaceProducts(
             @PathVariable UUID id,
             @Valid @RequestBody CollectionProductsRequest requestDTO,
@@ -92,7 +92,7 @@ public class CollectionController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PatchMapping("/{id}/publish")
+    @PatchMapping("/admin/{id}/publish")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> publishCollection(
             @PathVariable UUID id,
             @Valid @RequestBody CollectionVersionRequest requestDTO,
@@ -108,7 +108,7 @@ public class CollectionController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PatchMapping("/{id}/hide")
+    @PatchMapping("/admin/{id}/hide")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> hideCollection(
             @PathVariable UUID id,
             @Valid @RequestBody CollectionVersionRequest requestDTO,
@@ -125,7 +125,7 @@ public class CollectionController {
 
     /** DELETE không có body; version dạng query param để dùng được với mọi HTTP client. */
     @PreAuthorize("hasRole('ADMIN')")
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteCollection(
             @PathVariable UUID id,
             @RequestParam(name = "expectedVersion") long expectedVersion,
@@ -141,7 +141,7 @@ public class CollectionController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @GetMapping("/{id}")
+    @GetMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<CollectionDetailResponse>> getCollectionById(
             @PathVariable UUID id,
             HttpServletRequest request) {
@@ -156,18 +156,52 @@ public class CollectionController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @GetMapping
+    @GetMapping("/admin")
     public ResponseEntity<ApiResponse<PageResponse<CollectionSummaryResponse>>> getAllCollections(
             @ParameterObject
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable,
             HttpServletRequest request) {
-        SortWhitelist.check(pageable.getSort(), Set.of("collectionName", "slug", "createdAt", "updatedAt"));
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<CollectionSummaryResponse>>builder()
                         .code(HttpStatus.OK.value())
                         .message("Collections retrieved successfully")
                         .result(collectionService.getAllCollections(pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Một URL công khai cho cả guest/USER/ADMIN; dữ liệu luôn theo phạm vi cửa hàng. */
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageResponse<CollectionPublicSummaryResponse>>> getPublicCollections(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(
+                ApiResponse.<PageResponse<CollectionPublicSummaryResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Collections retrieved successfully")
+                        .result(collectionService.getPublicCollections(pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Chi tiết công khai: trang Product luôn theo sortOrder do admin sắp, không sort tuỳ ý. */
+    @GetMapping("/slug/{slug}")
+    public ResponseEntity<ApiResponse<CollectionPublicDetailResponse>> getPublicCollectionBySlug(
+            @PathVariable String slug,
+            @ParameterObject
+            @PageableDefault(size = 20, sort = {"sortOrder", "id"}, direction = Sort.Direction.ASC)
+            Pageable pageable,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(
+                ApiResponse.<CollectionPublicDetailResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Collection retrieved successfully")
+                        .result(collectionService.getPublicCollectionBySlug(slug, pageable))
                         .path(request.getRequestURI())
                         .build()
         );
