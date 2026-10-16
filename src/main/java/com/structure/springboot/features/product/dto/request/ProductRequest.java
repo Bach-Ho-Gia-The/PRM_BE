@@ -1,16 +1,15 @@
 package com.structure.springboot.features.product.dto.request;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Body của {@code POST /products}.
+ * Body của {@code POST /products/admin}.
  *
- * <p>{@code slug} để trống thì service tự sinh từ {@code name}. Tồn kho và gallery KHÔNG nằm ở đây:
- * chúng là tài nguyên con, quản lý qua {@code /products/{id}/variants} và {@code /products/{id}/images}.</p>
+ * <p>{@code slug} để trống thì service tự sinh từ {@code name}. Tồn kho và gallery
+ * là tài nguyên con, không nằm trong request này.</p>
  */
 public record ProductRequest(
         @NotBlank(message = "Product name is required")
@@ -43,8 +42,6 @@ public record ProductRequest(
 
         @Size(max = 500, message = "Thumbnail URL must not exceed 500 characters")
         String thumbnail,
-
-        ProductCollection collection,
 
         Boolean isSummer,
 

@@ -1,6 +1,5 @@
 package com.structure.springboot.features.product.entity;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.infrastructure.persistence.SoftDeletableEntity;
 import jakarta.persistence.*;
@@ -64,11 +63,6 @@ public class ProductEntity extends SoftDeletableEntity {
     /** Ảnh đại diện hiển thị ở lưới danh sách. Gallery đầy đủ nằm ở {@link ProductImageEntity}. */
     @Column(name = "thumbnail", length = 500)
     private String thumbnail;
-
-    @Builder.Default
-    @Enumerated(EnumType.STRING)
-    @Column(name = "collection", length = 20)
-    private ProductCollection collection = ProductCollection.REGULAR;
 
     @Builder.Default
     @Column(name = "is_summer")

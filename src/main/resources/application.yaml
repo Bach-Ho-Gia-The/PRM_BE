@@ -102,7 +102,8 @@ app:
       # thì rất nhiều người thật cùng ra một IP, siết chặt là chặn nhầm người dùng hợp lệ.
       max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
       lock-duration: ${LOGIN_LOCK_DURATION:15m}
-    whitelist: "/auth/**,/categories,/categories/**,/products,/products/**,/collections,/collections/slug/**"
+    # GET công khai theo ID đi qua /products/id/**; /products/admin không nằm trong whitelist.
+    whitelist: "/auth/**,/categories,/categories/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**"
   # ==========================================
   # QUY TẮC ĐẶT HÀNG
   # ==========================================

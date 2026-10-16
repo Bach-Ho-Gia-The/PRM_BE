@@ -1,6 +1,5 @@
 package com.structure.springboot.features.product.dto.response;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
 
 import java.math.BigDecimal;
@@ -30,7 +29,6 @@ public record ProductDetailResponse(
         String careInstructions,
         String tag,
         String thumbnail,
-        ProductCollection collection,
         Boolean isSummer,
         Boolean isFeatured,
         RecordStatus status,

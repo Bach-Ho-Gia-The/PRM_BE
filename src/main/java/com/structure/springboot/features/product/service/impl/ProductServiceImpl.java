@@ -4,6 +4,7 @@ import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.util.SlugUtils;
+import com.structure.springboot.common.util.SortWhitelist;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.features.category.repository.CategoryRepository;
 import com.structure.springboot.features.product.dto.request.ProductFilter;
@@ -24,11 +25,14 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class ProductServiceImpl implements ProductService {
+
+    private static final Set<String> PRODUCT_SORT_FIELDS = Set.of("name", "price", "createdAt", "updatedAt");
 
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
@@ -41,8 +45,7 @@ public class ProductServiceImpl implements ProductService {
             throw new ApiException(ErrorCode.CONFLICT, "Product SKU already exists: " + request.sku());
         }
 
-        CategoryEntity category = categoryRepository.findById(request.categoryId())
-                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + request.categoryId()));
+        CategoryEntity category = requireActiveCategory(request.categoryId());
 
         ProductEntity entity = productMapper.toEntity(request);
         entity.setCategory(category);
@@ -61,10 +64,9 @@ public class ProductServiceImpl implements ProductService {
             throw new ApiException(ErrorCode.CONFLICT, "Product SKU already exists: " + request.sku());
         }
 
+        // Sửa field khác vẫn giữ Category HIDDEN cũ; chỉ khi chuyển Category mới cần ACTIVE.
         if (request.categoryId() != null && !entity.getCategory().getId().equals(request.categoryId())) {
-            CategoryEntity newCategory = categoryRepository.findById(request.categoryId())
-                    .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + request.categoryId()));
-            entity.setCategory(newCategory);
+            entity.setCategory(requireActiveCategory(request.categoryId()));
         }
 
         productMapper.updateEntity(request, entity);
@@ -89,6 +91,21 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional(readOnly = true)
+    public ProductDetailResponse getAdminProductById(UUID id) {
+        return productMapper.toDetailResponse(requireManageable(id));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ProductResponse> getAdminProducts(Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), PRODUCT_SORT_FIELDS);
+        return PageResponse.from(productRepository.findAll(
+                StatusSpecifications.<ProductEntity>notDeleted().and(ProductSpecifications.fetchCategory()), pageable)
+                .map(productMapper::toResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public ProductDetailResponse getProductById(UUID id) {
         return productRepository.findById(id)
                 .filter(ProductServiceImpl::isVisible)
@@ -108,10 +125,13 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<ProductResponse> getAllProducts(ProductFilter filter, Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), PRODUCT_SORT_FIELDS);
+        validatePriceRange(filter);
+        String collectionSlug = normalizeCollectionSlug(filter.collection());
         Specification<ProductEntity> spec = StatusSpecifications.<ProductEntity>visible()
                 .and(ProductSpecifications.fetchCategory())
                 .and(ProductSpecifications.hasCategorySlug(filter.category()))
-                .and(ProductSpecifications.hasCollection(filter.collection()))
+                .and(ProductSpecifications.inPublishedCollection(collectionSlug))
                 .and(ProductSpecifications.matchesKeyword(filter.search()))
                 .and(ProductSpecifications.priceAtLeast(filter.minPrice()))
                 .and(ProductSpecifications.priceAtMost(filter.maxPrice()))
@@ -120,6 +140,35 @@ public class ProductServiceImpl implements ProductService {
         // map() của Page giữ nguyên thông tin phân trang, chỉ đổi kiểu phần tử —
         // không được .getContent().stream() vì làm vậy là mất totalElements/totalPages.
         return PageResponse.from(productRepository.findAll(spec, pageable).map(productMapper::toResponse));
+    }
+
+    private CategoryEntity requireActiveCategory(UUID id) {
+        CategoryEntity category = categoryRepository.findById(id)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + id));
+        if (category.getStatus() != RecordStatus.ACTIVE) {
+            throw new ApiException(ErrorCode.CONFLICT, "Only an ACTIVE category can be selected for a product");
+        }
+        return category;
+    }
+
+    private void validatePriceRange(ProductFilter filter) {
+        if ((filter.minPrice() != null && filter.minPrice().signum() < 0)
+                || (filter.maxPrice() != null && filter.maxPrice().signum() < 0)
+                || (filter.minPrice() != null && filter.maxPrice() != null
+                    && filter.minPrice().compareTo(filter.maxPrice()) > 0)) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Invalid product price range");
+        }
+    }
+
+    private String normalizeCollectionSlug(String slug) {
+        if (slug == null) {
+            return null;
+        }
+        String normalized = slug.trim();
+        if (normalized.length() > 100 || !normalized.matches("[a-z0-9]+(-[a-z0-9]+)*")) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Collection filter must be a published collection slug");
+        }
+        return normalized;
     }
 
     /**

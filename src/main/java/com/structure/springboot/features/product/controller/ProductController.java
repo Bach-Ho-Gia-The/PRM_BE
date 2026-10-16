@@ -1,7 +1,6 @@
 package com.structure.springboot.features.product.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
-import com.structure.springboot.common.util.SortWhitelist;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.product.dto.request.ProductFilter;
 import com.structure.springboot.features.product.dto.request.ProductRequest;
@@ -21,9 +20,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Set;
 import java.util.UUID;
 
+/** Một controller cho cả /products/admin và các GET công khai, không đổi dữ liệu theo vai trò. */
 @RestController
 @RequestMapping("/products")
 @RequiredArgsConstructor
@@ -32,7 +31,7 @@ public class ProductController {
     private final ProductService productService;
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PostMapping
+    @PostMapping("/admin")
     public ResponseEntity<ApiResponse<ProductDetailResponse>> createProduct(
             @Valid @RequestBody ProductRequest requestDTO,
             HttpServletRequest request) {
@@ -47,12 +46,9 @@ public class ProductController {
         );
     }
 
-    /**
-     * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
-     * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
-     */
+    /** PATCH cập nhật một phần: không gửi field thì giữ nguyên, không thay cả Product. */
     @PreAuthorize("hasRole('ADMIN')")
-    @PatchMapping("/{id}")
+    @PatchMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<ProductDetailResponse>> updateProduct(
             @PathVariable UUID id,
             @Valid @RequestBody ProductUpdateRequest requestDTO,
@@ -68,9 +64,9 @@ public class ProductController {
         );
     }
 
-    /** Xoá MỀM — bản ghi vẫn còn trong DB để đơn hàng cũ không bị mồ côi, chỉ là không ai đọc được nữa. */
+    /** Xoá MỀM: giữ Product để không phá lịch sử đơn hàng. */
     @PreAuthorize("hasRole('ADMIN')")
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteProduct(
             @PathVariable UUID id,
             HttpServletRequest request) {
@@ -85,7 +81,42 @@ public class ProductController {
         );
     }
 
-    @GetMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin/{id}")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> getAdminProductById(
+            @PathVariable UUID id,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<ProductDetailResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Product retrieved successfully")
+                        .result(productService.getAdminProductById(id))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin")
+    public ResponseEntity<ApiResponse<PageResponse<ProductResponse>>> getAdminProducts(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<PageResponse<ProductResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Products retrieved successfully")
+                        .result(productService.getAdminProducts(pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Tra Product công khai theo ID; tiền tố /id tách khỏi /admin và /slug. */
+    @GetMapping("/id/{id}")
     public ResponseEntity<ApiResponse<ProductDetailResponse>> getProductById(
             @PathVariable UUID id,
             HttpServletRequest request) {
@@ -103,9 +134,7 @@ public class ProductController {
     /**
      * Tra theo slug cho trang {@code /san-pham/{slug}} của frontend.
      *
-     * <p>Đặt dưới tiền tố {@code /slug} thay vì để chung {@code /products/{idOrSlug}}: hai kiểu
-     * định danh khác nhau thì nên có hai đường riêng, Spring khỏi phải đoán chuỗi nhận được là
-     * UUID hay slug, và {@code @PathVariable UUID} vẫn tự validate được định dạng.</p>
+     * <p>Đặt dưới /slug thay vì /products/{idOrSlug}: hai kiểu định danh có đường riêng.</p>
      */
     @GetMapping("/slug/{slug}")
     public ResponseEntity<ApiResponse<ProductDetailResponse>> getProductBySlug(
@@ -123,10 +152,9 @@ public class ProductController {
     }
 
     /**
-     * Danh sách sản phẩm cho trang danh mục.
-     *
-     * <p>Lọc: {@code ?category=ao&collection=SUNSET&search=lua&minPrice=300000&maxPrice=700000&featured=true}.
-     * Phân trang và sắp xếp: {@code ?page=0&size=20&sort=price,asc}. Mọi bộ lọc đều tuỳ chọn.</p>
+     * Danh sách Product: {@code ?category=ao&collection=sunset&search=lua&minPrice=300000}
+     * có thể kết hợp {@code maxPrice}, {@code featured}, page/size/sort.
+     * Collection nhận slug BST ACTIVE thật; thứ tự admin của BST nằm tại /collections/slug/{slug}.
      */
     @GetMapping
     public ResponseEntity<ApiResponse<PageResponse<ProductResponse>>> getAllProducts(
@@ -135,10 +163,6 @@ public class ProductController {
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable,
             HttpServletRequest request) {
-
-        // Danh sách để thẳng tại đây thay vì tách hằng: dùng đúng một lần, và đọc phát là biết
-        // ngay endpoint này cho sắp xếp theo gì mà không phải nhảy sang file khác.
-        SortWhitelist.check(pageable.getSort(), Set.of("name", "price", "createdAt", "updatedAt"));
 
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<ProductResponse>>builder()

@@ -1,6 +1,5 @@
 package com.structure.springboot.infrastructure.initializer;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
 import com.structure.springboot.features.product.enums.ProductSize;
 
 import java.math.BigDecimal;
@@ -25,7 +24,6 @@ public record ProductSeedData(
         String careInstructions,
         String tag,
         String thumbnail,
-        ProductCollection collection,
         Boolean isSummer,
         Boolean isFeatured,
         String categorySlug,

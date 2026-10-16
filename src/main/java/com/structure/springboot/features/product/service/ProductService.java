@@ -24,12 +24,16 @@ public interface ProductService {
      */
     void deleteProduct(UUID id);
 
-    /** Chi tiết cho khách: sản phẩm đang ẩn hoặc đã xoá đều trả 404. */
+    /** Admin thấy cả Product HIDDEN, không thấy DELETED. */
+    ProductDetailResponse getAdminProductById(UUID id);
+
+    PageResponse<ProductResponse> getAdminProducts(Pageable pageable);
+
+    /** Chi tiết công khai: Product HIDDEN/DELETED trả 404 với mọi vai trò. */
     ProductDetailResponse getProductById(UUID id);
 
-    /** Đường vào của trang {@code /san-pham/{slug}}. */
     ProductDetailResponse getProductBySlug(String slug);
 
-    /** Danh sách có lọc + phân trang. Chỉ trả về sản phẩm đang bán. */
+    /** Danh sách công khai; các filter tuỳ chọn được áp trước phân trang. */
     PageResponse<ProductResponse> getAllProducts(ProductFilter filter, Pageable pageable);
 }

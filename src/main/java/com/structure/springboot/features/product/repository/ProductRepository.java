@@ -21,6 +21,7 @@ public interface ProductRepository extends JpaRepository<ProductEntity, UUID>,
         JpaSpecificationExecutor<ProductEntity> {
 
     boolean existsBySku(String sku);
+    Optional<ProductEntity> findBySku(String sku);
     boolean existsBySkuAndIdNot(String sku, UUID id);
 
     boolean existsBySlug(String slug);

@@ -1,8 +1,11 @@
 package com.structure.springboot.features.product.specification;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
+import com.structure.springboot.features.collection.entity.CollectionProductEntity;
 import com.structure.springboot.features.product.entity.ProductEntity;
+import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import jakarta.persistence.criteria.JoinType;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.util.StringUtils;
 
@@ -12,10 +15,8 @@ import java.util.Locale;
 /**
  * Bộ lọc danh sách sản phẩm cho trang danh mục.
  *
- * <p>Dùng Specification thay vì đẻ ra hàng loạt Derived Query (
- * {@code findByCategorySlugAndPriceBetweenAndNameContaining...}): năm bộ lọc đều tuỳ chọn nên số
- * tổ hợp là 2^5, không thể viết tay từng method. Specification ghép đúng những điều kiện client
- * thực sự gửi lên.</p>
+ * <p>Ghép các điều kiện tuỳ chọn bằng Specification: lọc ở DB trước COUNT/phân trang,
+ * không tạo một Query Method cho mỗi tổ hợp filter.</p>
  */
 public final class ProductSpecifications {
 
@@ -38,19 +39,36 @@ public final class ProductSpecifications {
         };
     }
 
-    /** Lọc theo slug danh mục ({@code ?category=ao}) — FE không cầm UUID của danh mục. */
+    /** Chỉ khi KHÁCH chọn Category, slug HIDDEN/null mới trả trang rỗng. */
     public static Specification<ProductEntity> hasCategorySlug(String categorySlug) {
         if (!StringUtils.hasText(categorySlug)) {
             return Specification.unrestricted();
         }
         String normalized = categorySlug.trim().toLowerCase(Locale.ROOT);
-        return (root, query, cb) -> cb.equal(cb.lower(root.get("category").get("slug")), normalized);
+        return (root, query, cb) -> cb.and(
+                cb.equal(cb.lower(root.get("category").get("slug")), normalized),
+                cb.equal(root.get("category").get("status"), RecordStatus.ACTIVE)
+        );
     }
 
-    public static Specification<ProductEntity> hasCollection(ProductCollection collection) {
-        return collection == null
-                ? Specification.unrestricted()
-                : (root, query, cb) -> cb.equal(root.get("collection"), collection);
+    /**
+     * Lọc theo BST thật đã publish, không theo nhãn cũ trên Product. EXISTS tránh nhân bản
+     * Product khi liên kết nhiều BST, giữ COUNT/paging đúng; Category HIDDEN không cản trở.
+     */
+    public static Specification<ProductEntity> inPublishedCollection(String collectionSlug) {
+        if (collectionSlug == null) {
+            return Specification.unrestricted();
+        }
+        return (root, query, cb) -> {
+            Subquery<Integer> membership = query.subquery(Integer.class);
+            Root<CollectionProductEntity> link = membership.from(CollectionProductEntity.class);
+            membership.select(cb.literal(1)).where(
+                    cb.equal(link.get("product").get("id"), root.get("id")),
+                    cb.equal(link.get("collection").get("slug"), collectionSlug),
+                    cb.equal(link.get("collection").get("status"), RecordStatus.ACTIVE)
+            );
+            return cb.exists(membership);
+        };
     }
 
     /**
