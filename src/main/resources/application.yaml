@@ -56,8 +56,8 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 15MB
+      max-file-size: ${UPLOAD_MAX_FILE_SIZE:10MB}
+      max-request-size: ${UPLOAD_MAX_REQUEST_SIZE:15MB}
 
   # ==========================================
   # (OPTIONAL) MONGODB - Mở comment khi dự án cần NoSQL
@@ -138,6 +138,24 @@ app:
     max-sends-per-hour: ${OTP_MAX_SENDS_PER_HOUR:5}
     register-ttl-seconds: ${OTP_REGISTER_TTL_SECONDS:600}
     resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:20}
+
+# ==========================================
+# CLOUDIRARY - UPLOAD ẢNH
+# ==========================================
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:}
+  api-key: ${CLOUDINARY_API_KEY:}
+  api-secret: ${CLOUDINARY_API_SECRET:}
+  folder-prefix: ${CLOUDINARY_FOLDER_PREFIX:prm/dev}
+  max-file-size: ${CLOUDINARY_MAX_FILE_SIZE:5MB}
+  allowed-formats: ${CLOUDINARY_ALLOWED_FORMATS:jpg,png,webp}
+  timeout: ${CLOUDINARY_TIMEOUT:30s}
+
+  quota:
+    enabled: ${CLOUDINARY_QUOTA_ENABLED:true}
+    block-at-percent: ${CLOUDINARY_QUOTA_BLOCK_AT_PERCENT:75}
+    cache-ttl: ${CLOUDINARY_QUOTA_CACHE_TTL:5m}
+    retry-delay: ${CLOUDINARY_QUOTA_RETRY_DELAY:30s}
 
 # ==========================================
 # TÀI LIỆU API (SWAGGER / OPENAPI)
