@@ -1,6 +1,5 @@
 package com.structure.springboot.features.product.entity;
 
-import com.structure.springboot.features.product.enums.ProductCollection;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.infrastructure.persistence.SoftDeletableEntity;
 import jakarta.persistence.*;
@@ -65,10 +64,9 @@ public class ProductEntity extends SoftDeletableEntity {
     @Column(name = "thumbnail", length = 500)
     private String thumbnail;
 
-    @Builder.Default
-    @Enumerated(EnumType.STRING)
-    @Column(name = "collection", length = 20)
-    private ProductCollection collection = ProductCollection.REGULAR;
+    /** Null for seed/external thumbnails; for managed images this matches the selected gallery image. */
+    @Column(name = "thumbnail_public_id", length = 500)
+    private String thumbnailPublicId;
 
     @Builder.Default
     @Column(name = "is_summer")
@@ -92,6 +90,6 @@ public class ProductEntity extends SoftDeletableEntity {
 
     @Builder.Default
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
-    @OrderBy("sortOrder ASC")
+    @OrderBy("sortOrder ASC, id ASC")
     private List<ProductImageEntity> images = new ArrayList<>();
 }

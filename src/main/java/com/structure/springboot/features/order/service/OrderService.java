@@ -2,6 +2,8 @@ package com.structure.springboot.features.order.service;
 
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
+import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
+import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.dto.response.OrderResponse;
 import com.structure.springboot.features.order.dto.response.OrderSummaryResponse;
 import org.springframework.data.domain.Pageable;
@@ -35,4 +37,15 @@ public interface OrderService {
      * service — đúng hướng phụ thuộc mà {@code profileService} đang dùng ở cùng chỗ đó.</p>
      */
     boolean hasOrders(UUID accountId);
+
+    /** Màn quản trị: mọi đơn của mọi người, lọc theo trạng thái nếu có. */
+    PageResponse<OrderSummaryResponse> getOrders(OrderStatus status, Pageable pageable);
+
+    /** Màn quản trị: chi tiết một đơn bất kỳ, tra theo id chứ không theo mã đơn. */
+    OrderResponse getOrderById(UUID id);
+
+    /**
+     * Admin chuyển trạng thái đơn. Huỷ đơn sẽ hoàn kho.
+     */
+    OrderResponse updateStatus(UUID id, OrderStatusUpdateRequest request);
 }

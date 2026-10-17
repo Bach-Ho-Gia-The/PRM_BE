@@ -38,6 +38,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        <!-- Xác minh ID token của Google: NimbusJwtDecoder + tải/cache JWKS. Dùng module của
+             chính Spring Security thay vì SDK google-api-client để không kéo thêm gson vào
+             cạnh Jackson đang dùng. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -141,6 +148,13 @@
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <!-- Cloudinary: upload và quản lý ảnh dùng chung -->
+        <dependency>
+            <groupId>com.cloudinary</groupId>
+            <artifactId>cloudinary-http5</artifactId>
+            <version>2.4.0</version>
         </dependency>
     </dependencies>
 

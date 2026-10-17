@@ -15,7 +15,7 @@ import java.time.LocalDate;
 /**
  * Hồ sơ cá nhân — tách hẳn khỏi {@code accounts}.
  *
- * <p><b>Phân vai rõ ràng:</b> {@code accounts} giữ phần danh tính đăng nhập (username, email,
+ * <p><b>Phân vai rõ ràng:</b> {@code accounts} giữ phần danh tính đăng nhập (email,
  * mật khẩu, quyền, trạng thái khoá) — đụng vào là đụng bảo mật. {@code profiles} giữ phần con
  * người (tên thật, số điện thoại, ngày sinh, ảnh đại diện) — sửa thoải mái, không ảnh hưởng
  * phiên đăng nhập.</p>
@@ -61,6 +61,10 @@ public class ProfileEntity extends BaseEntity {
 
     @Column(name = "avatar_url", length = 500)
     private String avatarUrl;
+
+    /** Null for Google/external/seed images; never returned to the client. */
+    @Column(name = "avatar_public_id", length = 500)
+    private String avatarPublicId;
 
     @Column(name = "address", length = 500)
     private String address;

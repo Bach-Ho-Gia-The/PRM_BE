@@ -15,6 +15,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
@@ -26,6 +27,7 @@ public class RoleController {
 
     private final RoleService roleService;
 
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<ApiResponse<RoleResponse>> createRole(
             @Valid @RequestBody RoleRequest requestDTO,
@@ -45,6 +47,7 @@ public class RoleController {
      * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
      * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
      */
+    @PreAuthorize("hasRole('ADMIN')")
     @PatchMapping("/{id}")
     public ResponseEntity<ApiResponse<RoleResponse>> updateRole(
             @PathVariable UUID id,
@@ -61,6 +64,7 @@ public class RoleController {
         );
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteRole(
             @PathVariable UUID id,
@@ -76,6 +80,7 @@ public class RoleController {
         );
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<RoleResponse>> getRoleById(
             @PathVariable UUID id,
@@ -97,6 +102,7 @@ public class RoleController {
      * ổn định — thiếu {@code sort} thì DB được tự do trả thứ tự tuỳ ý, trang 2 có thể lặp lại
      * bản ghi đã thấy ở trang 1.
      */
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping
     public ResponseEntity<ApiResponse<PageResponse<RoleResponse>>> getAllRoles(
             @ParameterObject

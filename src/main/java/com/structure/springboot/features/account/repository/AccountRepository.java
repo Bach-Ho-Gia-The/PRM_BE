@@ -1,6 +1,8 @@
 package com.structure.springboot.features.account.repository;
 
 import com.structure.springboot.features.account.entity.AccountEntity;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -14,8 +16,6 @@ import java.util.UUID;
 @Repository
 public interface AccountRepository extends JpaRepository<AccountEntity, UUID> {
 
-    boolean existsByUsernameIgnoreCase(String username);
-    boolean existsByUsernameIgnoreCaseAndIdNot(String username, UUID id);
     boolean existsByEmailIgnoreCase(String email);
     boolean existsByEmailIgnoreCaseAndIdNot(String email, UUID id);
 
@@ -25,9 +25,20 @@ public interface AccountRepository extends JpaRepository<AccountEntity, UUID> {
     @EntityGraph(attributePaths = {"role"})
     Optional<AccountEntity> findByEmailIgnoreCase(String email);
 
+    /**
+     * Tra tài khoản theo claim {@code sub} của Google. Không cần kèm {@code provider} vào điều
+     * kiện: {@code provider_id} đã unique trên toàn bảng và chỉ luồng Google mới ghi vào cột đó.
+     */
+    @EntityGraph(attributePaths = {"role"})
+    Optional<AccountEntity> findByProviderId(String providerId);
+
     @Override
     @EntityGraph(attributePaths = {"role"})
     Optional<AccountEntity> findById(UUID id);
+
+    /** Serialize creation of a missing legacy profile with concurrent avatar edits. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<AccountEntity> findWithLockById(UUID id);
 
     @Override
     @EntityGraph(attributePaths = {"role"})

@@ -5,10 +5,28 @@ import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.security.JwtProperties;
 import com.structure.springboot.common.security.JwtService;
 import com.structure.springboot.common.security.RefreshTokenRedis;
+import com.structure.springboot.features.account.dto.request.AccountRegistrationRequest;
 import com.structure.springboot.features.account.entity.AccountEntity;
+import com.structure.springboot.features.account.enums.AccountStatus;
+import com.structure.springboot.features.account.service.AccountService;
 import com.structure.springboot.features.account.repository.AccountRepository;
+import com.structure.springboot.common.security.OtpProperties;
+import com.structure.springboot.features.auth.dto.request.ForgotPasswordRequest;
+import com.structure.springboot.features.auth.dto.request.GoogleLoginRequest;
 import com.structure.springboot.features.auth.dto.request.LoginRequest;
+import com.structure.springboot.features.auth.dto.request.ResetPasswordRequest;
+import com.structure.springboot.features.auth.dto.request.VerifyOtpRequest;
+import com.structure.springboot.features.auth.dto.request.VerifyRegistrationRequest;
 import com.structure.springboot.features.auth.dto.response.LoginResponse;
+import com.structure.springboot.features.auth.dto.response.OtpTicketResponse;
+import com.structure.springboot.features.auth.dto.response.RegistrationPendingResponse;
+import com.structure.springboot.features.auth.security.GoogleTokenVerifier;
+import com.structure.springboot.features.auth.security.GoogleUserInfo;
+import com.structure.springboot.features.auth.enums.OtpPurpose;
+import com.structure.springboot.features.auth.security.OtpRedis;
+import com.structure.springboot.features.auth.security.PendingRegistration;
+import com.structure.springboot.features.auth.security.PendingRegistrationRedis;
+import com.structure.springboot.infrastructure.external.brevo.BrevoMailClient;
 import com.structure.springboot.features.auth.mapper.AuthMapper;
 import com.structure.springboot.features.auth.security.AccountPrincipal;
 import com.structure.springboot.features.auth.security.LoginAttemptGuard;
@@ -22,12 +40,15 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -41,6 +62,144 @@ public class AuthServiceImpl implements AuthService {
     private final AuthMapper authMapper;
     private final AccountRepository accountRepository;
     private final LoginAttemptGuard loginAttemptGuard;
+    private final AccountService accountService;
+    private final OtpRedis otpRedis;
+    private final PendingRegistrationRedis pendingRegistrationRedis;
+    private final PasswordEncoder passwordEncoder;
+    private final BrevoMailClient brevoMailClient;
+    private final OtpProperties otpProperties;
+    private final GoogleTokenVerifier googleTokenVerifier;
+
+    // Khởi tạo một lần rồi dùng lại, theo đúng tiền lệ của OrderServiceImpl: gieo hạt cho
+    // SecureRandom là thao tác đắt, tạo mới mỗi lần gọi là phí mà không an toàn hơn.
+    private final SecureRandom random = new SecureRandom();
+
+    /**
+     * Bước 1: cất hồ sơ vào Redis và gửi mã. KHÔNG chạm vào database ngoài một câu kiểm trùng
+     * email, nên đăng ký bỏ dở không để lại bất cứ thứ gì phải đi dọn.
+     */
+    @Override
+    public RegistrationPendingResponse register(AccountRegistrationRequest request) {
+        String email = normalizeEmail(request.email());
+
+        // Báo trùng email NGAY, đừng để khách ngồi chờ mã rồi mới nói. Bước xác minh sẽ kiểm
+        // lại lần nữa để bịt khoảng hở 10 phút giữa hai bước.
+        if (accountRepository.existsByEmailIgnoreCase(email)) {
+            throw new ApiException(ErrorCode.CONFLICT, "Email already in use: " + email);
+        }
+
+        long waitSeconds = otpRedis.cooldownRemaining(OtpPurpose.REGISTER, email);
+        if (waitSeconds > 0) {
+            throw new ApiException(ErrorCode.TOO_MANY_REQUESTS,
+                    "Please wait " + waitSeconds + " more seconds before requesting a new code");
+        }
+        if (otpRedis.incrementSendCount(OtpPurpose.REGISTER, email) > otpProperties.maxSendsPerHour()) {
+            throw new ApiException(ErrorCode.TOO_MANY_REQUESTS,
+                    "Too many verification emails requested for this address. Please try again later.");
+        }
+
+        Duration ttl = Duration.ofSeconds(otpProperties.registerTtlSeconds());
+
+        // Mỗi lần bấm sinh một mã phiên RIÊNG. Nhờ vậy hai người cùng khai một địa chỉ không
+        // dùng chung một ô: mã gửi tới hộp thư chỉ mở được đúng hồ sơ đã sinh ra nó.
+        String registrationId = UUID.randomUUID().toString();
+
+        // Băm ngay tại đây rồi mới rời khỏi service: Redis không bao giờ giữ mật khẩu thô.
+        pendingRegistrationRedis.store(registrationId, new PendingRegistration(
+                email,
+                passwordEncoder.encode(request.password()),
+                request.fullName(),
+                request.phone()), ttl);
+
+        String otp = generateOtp();
+        otpRedis.storeCode(OtpPurpose.REGISTER, registrationId, otp, ttl);
+        brevoMailClient.sendRegistrationOtpEmail(email, otp, otpProperties.registerTtlSeconds());
+
+        // Chỉ bật khoảng chờ SAU KHI mail đi thành công. Bật trước thì Brevo lỗi là khách vừa
+        // nhận 502 vừa bị khoá 20 giây dù chưa hề có mail nào tới.
+        otpRedis.startCooldown(OtpPurpose.REGISTER, email,
+                Duration.ofSeconds(otpProperties.resendCooldownSeconds()));
+
+        return authMapper.toRegistrationPendingResponse(registrationId, email,
+                otpProperties.registerTtlSeconds(), otpProperties.resendCooldownSeconds());
+    }
+
+    @Override
+    public LoginResponse verifyRegistration(VerifyRegistrationRequest request) {
+        String registrationId = request.registrationId();
+
+        PendingRegistration pending = pendingRegistrationRedis.find(registrationId)
+                .orElseThrow(() -> new ApiException(ErrorCode.BAD_REQUEST,
+                        "Your registration session has expired. Please sign up again."));
+
+        requireValidOtp(OtpPurpose.REGISTER, registrationId, request.otp(),
+                Duration.ofSeconds(otpProperties.registerTtlSeconds()),
+                // Hết lượt thì huỷ CẢ hồ sơ chứ không chỉ huỷ mã: yêu cầu là "coi như tạo tài
+                // khoản thất bại", nên người dùng phải khai lại từ đầu.
+                () -> {
+                    pendingRegistrationRedis.clear(registrationId);
+                    throw new ApiException(ErrorCode.TOO_MANY_REQUESTS,
+                            "Too many incorrect attempts. Your registration was cancelled, please sign up again.");
+                });
+
+        UUID accountId;
+        try {
+            // Chỉ tới dòng này database mới bị động tới lần đầu tiên.
+            accountId = accountService.createFromVerifiedRegistration(
+                    pending.email(), pending.passwordHash(), pending.fullName(), pending.phone()).id();
+        } catch (ApiException ex) {
+            // Thường là 409 vì trong lúc chờ đã có người chiếm email. Phải dọn hồ sơ, không thì
+            // khách bấm lại bao nhiêu lần cũng nhận đúng lỗi đó cho tới khi hết hạn.
+            // Chỉ bắt ApiException chứ không bắt RuntimeException: lỗi hạ tầng chớp nhoáng
+            // (database rớt một nhịp) là thứ thử lại được, xoá hồ sơ trong trường hợp đó là
+            // bắt khách khai lại từ đầu dù họ không làm gì sai.
+            pendingRegistrationRedis.clear(registrationId);
+            throw ex;
+        }
+
+        pendingRegistrationRedis.clear(registrationId);
+
+        AccountEntity account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.UNAUTHORIZED, "Account no longer exists"));
+
+        return issueTokens(AccountPrincipal.from(account));
+    }
+
+    @Override
+    public LoginResponse loginWithGoogle(GoogleLoginRequest request) {
+        // Xác minh TRƯỚC khi chạm vào database: token hỏng thì không được phép tạo ra bất cứ
+        // bản ghi nào. Mọi thông tin dùng phía dưới đều bóc từ token đã ký, không lấy từ body.
+        GoogleUserInfo googleUser = googleTokenVerifier.verify(request.idToken());
+
+        // Chặn TRƯỚC khi gộp: tài khoản đang bị khoá thì không được phép ghi provider_id vào
+        // bản ghi của họ rồi mới từ chối. Tra theo đúng thứ tự mà upsert sẽ dùng.
+        accountRepository.findByProviderId(googleUser.providerId())
+                .or(() -> accountRepository.findByEmailIgnoreCase(googleUser.email()))
+                .ifPresent(this::assertSignInAllowed);
+
+        UUID accountId = accountService.upsertGoogleAccount(
+                googleUser.providerId(),
+                googleUser.email(),
+                googleUser.fullName(),
+                googleUser.avatarUrl()).id();
+
+        AccountEntity account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.UNAUTHORIZED, "Account no longer exists"));
+
+        // Kiểm lại lần nữa dù phía trên đã chặn: nhánh này KHÔNG đi qua DaoAuthenticationProvider
+        // nên mọi đường tự cấp token đều phải tự xác nhận hai cờ trạng thái trước khi phát.
+        assertSignInAllowed(account);
+
+        return issueTokens(AccountPrincipal.from(account));
+    }
+
+    /** Hai cờ trạng thái mà {@code DaoAuthenticationProvider} vốn tự kiểm ở luồng login thường. */
+    private void assertSignInAllowed(AccountEntity account) {
+        AccountPrincipal principal = AccountPrincipal.from(account);
+        if (!principal.isEnabled() || !principal.isAccountNonLocked()) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "Account is not allowed to sign in");
+        }
+    }
 
     @Override
     public LoginResponse login(LoginRequest request, String clientIp) {
@@ -143,6 +302,142 @@ public class AuthServiceImpl implements AuthService {
     public void logoutAll(List<String> tokenCandidates) {
         Claims claims = firstRevocableClaims(tokenCandidates);
         refreshTokenRedis.revokeEverySession(claims.get("uid", String.class), claims.getSubject());
+    }
+
+    @Override
+    public void forgotPassword(ForgotPasswordRequest request) {
+        // Tài khoản không tồn tại, hoặc đang DISABLED/LOCKED -> im lặng kết thúc. Controller vẫn
+        // trả cùng một câu trả lời nên người ngoài không phân biệt được hai trường hợp.
+        accountRepository.findByEmailIgnoreCase(request.email())
+                .filter(account -> account.getStatus() == null || account.getStatus() == AccountStatus.ACTIVE)
+                .ifPresent(account -> issueOtp(account.getEmail()));
+    }
+
+    @Override
+    public OtpTicketResponse verifyOtp(VerifyOtpRequest request) {
+        String key = normalizeEmail(request.email());
+
+        requireValidOtp(OtpPurpose.RESET, key, request.otp(),
+                Duration.ofSeconds(otpProperties.ttlSeconds()),
+                () -> {
+                    throw new ApiException(ErrorCode.TOO_MANY_REQUESTS,
+                            "Too many incorrect attempts. Please request a new code.");
+                });
+
+        // Mã đã chết trong requireValidOtp; đổi lấy vé tạm sống lâu hơn một chút cho đủ thời
+        // gian gõ mật khẩu mới.
+        String ticket = otpRedis.createTicket(key,
+                Duration.ofSeconds(otpProperties.verifiedTtlSeconds()));
+
+        return authMapper.toOtpTicketResponse(ticket, otpProperties.verifiedTtlSeconds());
+    }
+
+    @Override
+    public void resetPassword(ResetPasswordRequest request) {
+        String email = otpRedis.consumeTicket(request.ticket())
+                .orElseThrow(() -> new ApiException(ErrorCode.UNAUTHORIZED,
+                        "The reset session has expired. Please start again."));
+
+        // Ghi database và thu hồi phiên gom trong accountService để dùng chung đúng một đường
+        // với changePassword, khỏi sinh ra hai bản xử lý dễ lệch nhau.
+        accountService.resetPassword(email, request.newPassword());
+    }
+
+    /**
+     * Phát một mã mới rồi gửi mail. Tách khỏi {@code forgotPassword} để phần quyết định
+     * "có được phát không" nằm gọn một chỗ.
+     *
+     * <p>Hai lớp hãm, đều khoá theo email: khoảng chờ giữa hai lần bấm, và trần số lần gửi trong
+     * một giờ. Thiếu chúng thì bất kỳ ai cũng biến endpoint công khai này thành máy dội mail vào
+     * hộp thư người khác.</p>
+     */
+    private void issueOtp(String email) {
+        String key = normalizeEmail(email);
+
+        // Im lặng bỏ qua chứ KHÔNG ném 429 như luồng đăng ký: endpoint quên mật khẩu phải trả
+        // cùng một kết quả cho mọi email, báo "đang trong thời gian chờ" là xác nhận email đó
+        // có thật trong hệ thống.
+        if (otpRedis.cooldownRemaining(OtpPurpose.RESET, key) > 0
+                || otpRedis.incrementSendCount(OtpPurpose.RESET, key) > otpProperties.maxSendsPerHour()) {
+            return;
+        }
+
+        String otp = generateOtp();
+        otpRedis.storeCode(OtpPurpose.RESET, key, otp, Duration.ofSeconds(otpProperties.ttlSeconds()));
+
+        try {
+            brevoMailClient.sendOtpEmail(email, otp, otpProperties.ttlSeconds());
+        } catch (ApiException ex) {
+            // Nuốt lỗi ở ĐÚNG luồng này thôi. Endpoint quên mật khẩu đã cam kết luôn trả 200;
+            // để lỗi gửi mail bay lên là email có thật trả 502 còn email bịa trả 200, tức là
+            // tặng kẻ tấn công đúng cái máy dò mà cam kết kia sinh ra để chặn.
+            // Đổi lại, cấu hình Brevo sai sẽ im lặng ở đây — /auth/register vẫn báo lỗi rõ ràng
+            // nên vẫn có chỗ phát hiện.
+            return;
+        }
+
+        // Bật khoảng chờ SAU khi mail đi thành công — xem lý do ở register().
+        otpRedis.startCooldown(OtpPurpose.RESET, key,
+                Duration.ofSeconds(otpProperties.resendCooldownSeconds()));
+    }
+
+    /**
+     * Kiểm một mã OTP: đúng thì xoá mã rồi trả về, sai thì đếm và ném lỗi. Dùng chung cho cả
+     * luồng đăng ký lẫn luồng quên mật khẩu — trước đó hai nơi chép y hệt nhau mười mấy dòng.
+     *
+     * <p>{@code onAttemptsExhausted} để mỗi luồng tự quyết phần dọn dẹp riêng và tự ném câu lỗi
+     * của mình; hàm này chỉ lo phần đếm và xoá mã.</p>
+     *
+     * <p>Hết lượt là <b>xoá hẳn mã</b> chứ không chặn tạm: giữ lại mã nghĩa là kẻ dò chỉ cần đợi
+     * bộ đếm hết hạn rồi đoán tiếp trên đúng mã cũ.</p>
+     *
+     * <p><b>🔴 Thứ tự ĐẾM TRƯỚC — SO SAU là bắt buộc, đừng đảo lại.</b> Bản cũ so mã trước rồi
+     * mới tăng bộ đếm, nên một loạt request bắn cùng lúc đều kịp đọc mã và so <i>trước khi</i>
+     * bộ đếm kịp chạm trần: 5 lượt đoán trên giấy biến thành hàng trăm lượt đoán thật, đúng bằng
+     * số luồng mà server xử lý song song được. {@code INCR} của Redis là nguyên tử nên mỗi
+     * request nhận một số thứ tự riêng; chặn ngay tại số thứ tự thì request thứ sáu trở đi không
+     * bao giờ chạm tới phép so, dù chúng tới cùng một mili giây.</p>
+     */
+    private void requireValidOtp(OtpPurpose purpose, String subject, String submittedOtp,
+                                 Duration ttl, Runnable onAttemptsExhausted) {
+        long attempts = otpRedis.incrementAttempts(purpose, subject, ttl);
+
+        // Cổng chống đua: quá trần thì dừng TRƯỚC khi so, không cho biết mã đúng hay sai.
+        if (attempts > otpProperties.maxAttempts()) {
+            otpRedis.clearCode(purpose, subject);
+            onAttemptsExhausted.run();
+        }
+
+        String storedOtp = otpRedis.findCode(purpose, subject)
+                .orElseThrow(() -> new ApiException(ErrorCode.BAD_REQUEST,
+                        "The verification code has expired. Please request a new one."));
+
+        if (storedOtp.equals(submittedOtp)) {
+            otpRedis.clearCode(purpose, subject);
+            return;
+        }
+
+        // Cổng kết thúc lượt: sai đúng ở lần thứ maxAttempts thì huỷ luôn tại đây, để người dùng
+        // nhận ngay câu "đã huỷ" chứ không phải bấm thêm một lần nữa mới biết.
+        if (attempts >= otpProperties.maxAttempts()) {
+            otpRedis.clearCode(purpose, subject);
+            onAttemptsExhausted.run();
+        }
+
+        throw new ApiException(ErrorCode.BAD_REQUEST, "Incorrect verification code");
+    }
+
+    /**
+     * {@code %06d} để mã luôn đủ 6 chữ số: {@code nextInt(1_000_000)} trả 42 thì phải thành
+     * "000042", không thì độ dài mã thay đổi và regex ở cả client lẫn backend đều trượt.
+     */
+    private String generateOtp() {
+        return "%06d".formatted(random.nextInt(1_000_000));
+    }
+
+    /** Khoá Redis phải khớp tuyệt đối, mà đăng nhập lại so email không phân biệt hoa thường. */
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
     }
 
     /**

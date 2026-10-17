@@ -6,6 +6,10 @@ import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.features.category.repository.CategoryRepository;
+import com.structure.springboot.features.collection.dto.request.CollectionCreateRequest;
+import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
+import com.structure.springboot.features.collection.repository.CollectionRepository;
+import com.structure.springboot.features.collection.service.CollectionService;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductImageEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -26,13 +30,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
- * Tạo sẵn dữ liệu tối thiểu để dự án chạy được ngay sau khi clone: hai role ADMIN/USER
- * và hai tài khoản tương ứng.
+ * Tạo dữ liệu demo: role, tài khoản, Category, Product và BST Sunset thật. Với DB dev/test cũ
+ * còn products.collection, chạy script backfill dev_only trước khi bật initializer mới.
  *
- * <p><b>Idempotent</b> — mỗi lần khởi động đều kiểm tra tồn tại trước khi ghi, nên chạy lại
- * bao nhiêu lần cũng không sinh dữ liệu trùng và không ghi đè mật khẩu người dùng đã đổi.</p>
+ * <p><b>Idempotent</b> — mỗi lần khởi động kiểm tra tồn tại trước khi ghi; không ghi đè
+ * mật khẩu hoặc thứ tự Product trong BST mà admin đã sửa.</p>
  *
  * <p>Tắt bằng {@code app.data-init.enabled=false} khi deploy thật.</p>
  */
@@ -44,6 +49,8 @@ public class DataInitializer implements CommandLineRunner {
     private final AccountRepository accountRepository;
     private final CategoryRepository categoryRepository;
     private final ProductRepository productRepository;
+    private final CollectionRepository collectionRepository;
+    private final CollectionService collectionService;
     private final PasswordEncoder passwordEncoder;
     private final JsonMapper jsonMapper;
 
@@ -66,12 +73,13 @@ public class DataInitializer implements CommandLineRunner {
         RoleEntity adminRole = ensureRole("ADMIN", "Full access to every resource");
         RoleEntity userRole = ensureRole("USER", "Default role for end users");
 
-        ensureAccount("admin", "admin@example.com", adminPassword, adminRole);
-        ensureAccount("user", "user@example.com", userPassword, userRole);
+        ensureAccount("admin@example.com", adminPassword, adminRole);
+        ensureAccount("user@example.com", userPassword, userRole);
 
         ensureCategory("Áo & Đầm", "ao");
         ensureCategory("Quần & Chân Váy", "quan");
         ensureCatalog();
+        ensureSeedCollections();
     }
 
     /** Danh mục tra theo slug vì slug mới là thứ frontend dùng để lọc, tên hiển thị có thể đổi. */
@@ -110,7 +118,6 @@ public class DataInitializer implements CommandLineRunner {
                     .careInstructions(seed.careInstructions())
                     .tag(seed.tag())
                     .thumbnail(seed.thumbnail())
-                    .collection(seed.collection())
                     .isSummer(Boolean.TRUE.equals(seed.isSummer()))
                     .isFeatured(Boolean.TRUE.equals(seed.isFeatured()))
                     .category(category)
@@ -142,20 +149,42 @@ public class DataInitializer implements CommandLineRunner {
         }
     }
 
+    /** BST mẫu tạo qua Service để giữ cùng quy tắc HIDDEN -> ACTIVE với thao tác admin. */
+    private void ensureSeedCollections() {
+        for (CollectionSeedData seed : readSeedFile("data/collections.json", new TypeReference<List<CollectionSeedData>>() {
+        })) {
+            // Kể cả BST đã xoá mềm: không hồi sinh/ghi đè lựa chọn của admin khi khởi động lại.
+            if (collectionRepository.existsBySlug(seed.slug())) {
+                continue;
+            }
+            if (seed.productSkus() == null || seed.productSkus().isEmpty()) {
+                throw new ApiException(ErrorCode.INTERNAL_SERVER_ERROR,
+                        "Collection seed requires at least one product SKU: " + seed.slug());
+            }
+            List<UUID> ids = seed.productSkus().stream().map(sku -> productRepository.findBySku(sku)
+                    .orElseThrow(() -> new ApiException(ErrorCode.INTERNAL_SERVER_ERROR,
+                            "Collection seed references unknown product SKU: " + sku)).getId()).toList();
+            var created = collectionService.createCollection(new CollectionCreateRequest(
+                    seed.collectionName(), seed.slug(), seed.coverImageUrl(), ids));
+            collectionService.publishCollection(created.id(), new CollectionVersionRequest(created.version()));
+        }
+    }
+
     private List<ProductSeedData> readCatalogSeed() {
-        ClassPathResource resource = new ClassPathResource("data/products.json");
+        return readSeedFile("data/products.json", new TypeReference<List<ProductSeedData>>() {
+        });
+    }
+
+    private <T> List<T> readSeedFile(String path, TypeReference<List<T>> type) {
+        ClassPathResource resource = new ClassPathResource(path);
         if (!resource.exists()) {
             return List.of();
         }
-
         try (InputStream input = resource.getInputStream()) {
-            return jsonMapper.readValue(input, new TypeReference<List<ProductSeedData>>() {
-            });
+            return jsonMapper.readValue(input, type);
         } catch (IOException ex) {
-            // Hỏng file seed thì để ứng dụng chết ngay lúc khởi động, hơn là chạy với catalog rỗng
-            // rồi cả nhóm ngồi đoán vì sao không có sản phẩm nào.
             throw new ApiException(ErrorCode.INTERNAL_SERVER_ERROR,
-                    "Cannot read catalog seed file data/products.json: " + ex.getMessage());
+                    "Cannot read seed file " + path + ": " + ex.getMessage());
         }
     }
 
@@ -169,16 +198,15 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     /**
-     * Chỉ tạo khi username chưa tồn tại. KHÔNG cập nhật tài khoản cũ: nếu người dùng đã đổi
+     * Chỉ tạo khi email chưa tồn tại. KHÔNG cập nhật tài khoản cũ: nếu người dùng đã đổi
      * mật khẩu rồi mà mỗi lần khởi động lại ghi đè về mặc định thì vừa phiền vừa nguy hiểm.
      */
-    private void ensureAccount(String username, String email, String rawPassword, RoleEntity role) {
-        if (accountRepository.existsByUsernameIgnoreCase(username)) {
+    private void ensureAccount(String email, String rawPassword, RoleEntity role) {
+        if (accountRepository.existsByEmailIgnoreCase(email)) {
             return;
         }
 
         accountRepository.save(AccountEntity.builder()
-                .username(username)
                 .email(email)
                 .password(passwordEncoder.encode(rawPassword))
                 .role(role)

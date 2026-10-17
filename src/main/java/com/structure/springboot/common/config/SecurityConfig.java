@@ -5,7 +5,9 @@ import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.security.AuthCookieProperties;
 import com.structure.springboot.common.security.JwtAuthenticationFilter;
 import com.structure.springboot.common.security.JwtProperties;
+import com.structure.springboot.common.security.GoogleAuthProperties;
 import com.structure.springboot.common.security.LoginAttemptProperties;
+import com.structure.springboot.common.security.OtpProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -33,7 +35,8 @@ import java.util.List;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties({JwtProperties.class, AuthCookieProperties.class, LoginAttemptProperties.class})
+@EnableConfigurationProperties({JwtProperties.class, AuthCookieProperties.class, LoginAttemptProperties.class,
+        OtpProperties.class, GoogleAuthProperties.class})
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -54,28 +57,6 @@ public class SecurityConfig {
     @Value("${app.security.whitelist:}")
     private String[] businessWhitelist;
 
-    // Tiền tố context-path (vd /api/v1). Spring Security 7 (Boot 4) so khớp request theo đường dẫn
-    // CÒN NGUYÊN context-path, nên whitelist viết "/products" sẽ không khớp "/api/v1/products" ⇒ 401.
-    @Value("${server.servlet.context-path:}")
-    private String contextPath;
-
-    /**
-     * Nhân đôi mỗi pattern thành 2 biến thể: dạng gốc ("/products") và dạng có tiền tố
-     * context-path ("/api/v1/products"). Nhờ vậy whitelist khớp bất kể Spring so khớp theo
-     * đường dẫn đã cắt hay chưa cắt context-path.
-     */
-    private String[] expandWithContextPath(String[] patterns) {
-        if (contextPath == null || contextPath.isBlank()) {
-            return patterns;
-        }
-        java.util.List<String> all = new java.util.ArrayList<>();
-        for (String p : patterns) {
-            all.add(p);
-            all.add(contextPath + p);
-        }
-        return all.toArray(new String[0]);
-    }
-
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
@@ -83,8 +64,8 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults()) // Kích hoạt CORS
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(expandWithContextPath(SYSTEM_WHITELIST)).permitAll()
-                        .requestMatchers(expandWithContextPath(businessWhitelist)).permitAll()
+                        .requestMatchers(SYSTEM_WHITELIST).permitAll()
+                        .requestMatchers(businessWhitelist).permitAll()
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception

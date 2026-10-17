@@ -7,7 +7,7 @@ import java.util.UUID;
 /**
  * Kết quả đăng nhập, dùng chung cho cả hai loại client.
  *
- * <p>Thông tin tài khoản được <b>làm phẳng</b> thành field (userId, username, email, roleName)
+ * <p>Thông tin tài khoản được <b>làm phẳng</b> thành field (userId, email, roleName)
  * đúng theo quy ước của các response sẵn có trong dự án: {@code ProductResponse} flatten
  * {@code categoryId/categoryName}, {@code AccountResponse} flatten {@code roleName}.</p>
  *
@@ -24,7 +24,6 @@ public record LoginResponse(
         String tokenType,
         Long expiresIn,
         UUID userId,
-        String username,
         String email,
         String roleName
 ) {

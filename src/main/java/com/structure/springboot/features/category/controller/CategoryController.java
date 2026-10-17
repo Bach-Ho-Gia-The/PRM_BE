@@ -1,10 +1,10 @@
 package com.structure.springboot.features.category.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
-import com.structure.springboot.common.util.SortWhitelist;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.category.dto.request.CategoryRequest;
 import com.structure.springboot.features.category.dto.request.CategoryUpdateRequest;
+import com.structure.springboot.features.category.dto.response.CategoryPublicResponse;
 import com.structure.springboot.features.category.dto.response.CategoryResponse;
 import com.structure.springboot.features.category.service.CategoryService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -16,11 +16,19 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Set;
 import java.util.UUID;
 
+/** Một controller: quản trị dưới /categories/admin, GET cửa hàng dưới các URL riêng. */
 @RestController
 @RequestMapping("/categories")
 @RequiredArgsConstructor
@@ -28,7 +36,8 @@ public class CategoryController {
 
     private final CategoryService categoryService;
 
-    @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/admin")
     public ResponseEntity<ApiResponse<CategoryResponse>> createCategory(
             @Valid @RequestBody CategoryRequest requestDTO,
             HttpServletRequest request) {
@@ -43,11 +52,8 @@ public class CategoryController {
         );
     }
 
-    /**
-     * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
-     * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
-     */
-    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<CategoryResponse>> updateCategory(
             @PathVariable UUID id,
             @Valid @RequestBody CategoryUpdateRequest requestDTO,
@@ -63,7 +69,8 @@ public class CategoryController {
         );
     }
 
-    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/admin/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteCategory(
             @PathVariable UUID id,
             HttpServletRequest request) {
@@ -78,8 +85,9 @@ public class CategoryController {
         );
     }
 
-    @GetMapping("/{id}")
-    public ResponseEntity<ApiResponse<CategoryResponse>> getCategoryById(
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin/{id}")
+    public ResponseEntity<ApiResponse<CategoryResponse>> getAdminCategoryById(
             @PathVariable UUID id,
             HttpServletRequest request) {
 
@@ -87,32 +95,74 @@ public class CategoryController {
                 ApiResponse.<CategoryResponse>builder()
                         .code(HttpStatus.OK.value())
                         .message("Category retrieved successfully")
-                        .result(categoryService.getCategoryById(id))
+                        .result(categoryService.getAdminCategoryById(id))
                         .path(request.getRequestURI())
                         .build()
         );
     }
 
-    /**
-     * Phân trang qua query param {@code ?page=0&size=20&sort=createdAt,desc}.
-     * {@code @PageableDefault} chốt sẵn cỡ trang và thứ tự để client không gửi gì vẫn có kết quả
-     * ổn định — thiếu {@code sort} thì DB được tự do trả thứ tự tuỳ ý, trang 2 có thể lặp lại
-     * bản ghi đã thấy ở trang 1.
-     */
-    @GetMapping
-    public ResponseEntity<ApiResponse<PageResponse<CategoryResponse>>> getAllCategories(
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin")
+    public ResponseEntity<ApiResponse<PageResponse<CategoryResponse>>> getAdminCategories(
             @ParameterObject
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable,
             HttpServletRequest request) {
 
-        SortWhitelist.check(pageable.getSort(), Set.of("name", "createdAt"));
-
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<CategoryResponse>>builder()
                         .code(HttpStatus.OK.value())
                         .message("Categories retrieved successfully")
-                        .result(categoryService.getAllCategories(pageable))
+                        .result(categoryService.getAdminCategories(pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** ID có tiền tố riêng để YAML không cần whitelist /categories/** (kể cả /admin). */
+    @GetMapping("/id/{id}")
+    public ResponseEntity<ApiResponse<CategoryPublicResponse>> getPublicCategoryById(
+            @PathVariable UUID id,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<CategoryPublicResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Category retrieved successfully")
+                        .result(categoryService.getPublicCategoryById(id))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    @GetMapping("/slug/{slug}")
+    public ResponseEntity<ApiResponse<CategoryPublicResponse>> getPublicCategoryBySlug(
+            @PathVariable String slug,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<CategoryPublicResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Category retrieved successfully")
+                        .result(categoryService.getPublicCategoryBySlug(slug))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Public GET luôn chỉ trả Category ACTIVE, bất kể người gọi là guest, USER hay ADMIN. */
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageResponse<CategoryPublicResponse>>> getPublicCategories(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<PageResponse<CategoryPublicResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Categories retrieved successfully")
+                        .result(categoryService.getPublicCategories(pageable))
                         .path(request.getRequestURI())
                         .build()
         );

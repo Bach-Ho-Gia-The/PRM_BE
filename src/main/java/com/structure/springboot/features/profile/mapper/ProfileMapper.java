@@ -14,13 +14,24 @@ import org.mapstruct.ReportingPolicy;
 public interface ProfileMapper {
 
     @Mapping(target = "accountId", source = "account.id")
-    @Mapping(target = "username", source = "account.username")
     @Mapping(target = "email", source = "account.email")
+    /*
+     * Hồ sơ coi là xong khi có đủ tên và số điện thoại — hai thứ tối thiểu để gọi tên khách và
+     * liên lạc giao hàng. Backend tự trả lời thay vì để hai frontend (web + mobile) mỗi bên tự
+     * suy luận từ dữ liệu rồi lệch nhau.
+     *
+     * Dùng expression chứ không @AfterMapping: ProfileResponse là record bất biến, MapStruct
+     * dựng nó bằng constructor nên không có @MappingTarget để gắn hàm hậu xử lý vào.
+     * Hai field đọc ở đây đều là cột thường của chính ProfileEntity, không chạm quan hệ lazy.
+     */
+    @Mapping(target = "profileCompleted",
+            expression = "java(entity.getFullName() != null && entity.getPhone() != null)")
     ProfileResponse toResponse(ProfileEntity entity);
 
     @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "account", ignore = true)
+    @Mapping(target = "avatarPublicId", ignore = true)
     @Mapping(target = "createdAt", ignore = true)
     @Mapping(target = "updatedAt", ignore = true)
     void updateEntity(ProfileUpdateRequest request, @MappingTarget ProfileEntity entity);

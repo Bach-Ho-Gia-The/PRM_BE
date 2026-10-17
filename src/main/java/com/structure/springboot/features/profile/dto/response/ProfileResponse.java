@@ -9,13 +9,12 @@ import java.util.UUID;
 /**
  * Hồ sơ trả về cho frontend — phẳng tuyệt đối.
  *
- * <p>{@code username} và {@code email} được kéo thẳng từ account (flatten quan hệ nhiều-1 y như
+ * <p>{@code email} được kéo thẳng từ account (flatten quan hệ nhiều-1 y như
  * {@code categoryName} bên product), để màn "Tài khoản của tôi" chỉ cần gọi một API.</p>
  */
 public record ProfileResponse(
         UUID id,
         UUID accountId,
-        String username,
         String email,
         String fullName,
         String phone,
@@ -23,6 +22,7 @@ public record ProfileResponse(
         Gender gender,
         String avatarUrl,
         String address,
+        boolean profileCompleted,
         Instant createdAt,
         Instant updatedAt
 ) {

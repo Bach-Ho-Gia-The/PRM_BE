@@ -4,6 +4,8 @@ import com.structure.springboot.common.response.ApiResponse;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.security.AuthenticatedUser;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
+import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
+import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.dto.response.OrderResponse;
 import com.structure.springboot.features.order.dto.response.OrderSummaryResponse;
 import com.structure.springboot.features.order.service.OrderService;
@@ -16,8 +18,11 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
 
 /**
  * Đơn hàng — <b>mọi endpoint đều bắt buộc đăng nhập</b>.
@@ -86,6 +91,65 @@ public class OrderController {
                         .code(HttpStatus.OK.value())
                         .message("Order retrieved successfully")
                         .result(orderService.getMyOrderByNumber(AuthenticatedUser.requireId(currentUser), orderNumber))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /**
+     * Màn quản trị: toàn bộ đơn của mọi khách, lọc theo trạng thái nếu truyền {@code ?status=}.
+     *
+     * <p>Đặt ở {@code GET /orders} chứ không phải {@code /orders/all}: tài nguyên vẫn là đơn hàng,
+     * cái khác chỉ là phạm vi — còn {@code /orders/me} mới là lát cắt hẹp của chính nó.</p>
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageResponse<OrderSummaryResponse>>> getOrders(
+            @RequestParam(required = false) OrderStatus status,
+            @ParameterObject @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<PageResponse<OrderSummaryResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Orders retrieved successfully")
+                        .result(orderService.getOrders(status, pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Màn quản trị: chi tiết một đơn bất kỳ. Khách tự xem đơn mình thì dùng {@code /orders/me/{orderNumber}}. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/{id}")
+    public ResponseEntity<ApiResponse<OrderResponse>> getOrderById(
+            @PathVariable UUID id,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<OrderResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Order retrieved successfully")
+                        .result(orderService.getOrderById(id))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Admin chuyển trạng thái đơn. Chuyển sang CANCELLED thì hàng được trả về kho. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<ApiResponse<OrderResponse>> updateOrderStatus(
+            @PathVariable UUID id,
+            @Valid @RequestBody OrderStatusUpdateRequest requestDTO,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<OrderResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Order status updated successfully")
+                        .result(orderService.updateStatus(id, requestDTO))
                         .path(request.getRequestURI())
                         .build()
         );

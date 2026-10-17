@@ -70,19 +70,6 @@ public class RefreshTokenRedis {
     }
 
     /**
-     * Access token còn hiệu lực hay đã bị thu hồi — gọi trên MỌI request nên chỉ tốn
-     * <b>một vòng mạng Redis duy nhất</b> (MGET 2 key), không phải hai lần GET.
-     *
-     * <p>Hai lý do bị thu hồi:</p>
-     * <ol>
-     *   <li><b>Mốc logout toàn cục</b> — token phát hành trước khi đổi mật khẩu / logout-all / khoá
-     *       tài khoản thì chết, kể cả phiên khác.</li>
-     *   <li><b>Phiên đã logout</b> — access token mang claim {@code sid} chính là jti của refresh
-     *       token sinh ra nó. Refresh token bị xoá khỏi Redis ⇒ access token chết theo ngay lập tức,
-     *       không phải chờ hết 15 phút. Nhờ vậy không cần thêm bảng denylist riêng nào.</li>
-     * </ol>
-     */
-    /**
      * Xoá sạch mọi phiên của một tài khoản. Hai bước bổ trợ nhau, thiếu bước nào cũng hở:
      * <ul>
      *   <li>{@code revokeAllTokens} giết các phiên <b>đang được Redis theo dõi</b>;</li>
@@ -103,6 +90,19 @@ public class RefreshTokenRedis {
         }
     }
 
+    /**
+     * Access token còn hiệu lực hay đã bị thu hồi — gọi trên MỌI request nên chỉ tốn
+     * <b>một vòng mạng Redis duy nhất</b> (MGET 2 key), không phải hai lần GET.
+     *
+     * <p>Hai lý do bị thu hồi:</p>
+     * <ol>
+     *   <li><b>Mốc logout toàn cục</b> — token phát hành trước khi đổi mật khẩu / logout-all / khoá
+     *       tài khoản thì chết, kể cả phiên khác.</li>
+     *   <li><b>Phiên đã logout</b> — access token mang claim {@code sid} chính là jti của refresh
+     *       token sinh ra nó. Refresh token bị xoá khỏi Redis ⇒ access token chết theo ngay lập tức,
+     *       không phải chờ hết 15 phút. Nhờ vậy không cần thêm bảng denylist riêng nào.</li>
+     * </ol>
+     */
     public boolean isAccessTokenRevoked(String email, String sessionId, long issuedAtMillis) {
         List<String> keys = sessionId == null
                 ? List.of(LOGOUT_TIME_PREFIX + email)
@@ -114,12 +114,34 @@ public class RefreshTokenRedis {
         }
 
         String logoutTime = values.get(0);
-        if (logoutTime != null && issuedAtMillis < Long.parseLong(logoutTime)) {
+        if (logoutTime != null && issuedAtMillis < parseLogoutTime(email, logoutTime)) {
             return true;
         }
 
         // sessionId null = token phát hành trước khi có claim "sid" -> không chặn, tránh đá văng
         // những phiên đang đăng nhập hợp lệ ngay lúc triển khai bản mới.
         return sessionId != null && values.size() > 1 && values.get(1) == null;
+    }
+
+    /**
+     * Đọc mốc logout, tự chữa lành nếu giá trị không còn là số.
+     *
+     * <p>Hàm này chạy ở <b>mọi request đã đăng nhập</b>, nên một {@code NumberFormatException}
+     * ở đây không phải lỗi 500 một lần mà là lỗi 500 lặp lại cho tới khi khoá hết hạn — tức là
+     * người dùng đó bị nhốt khỏi toàn bộ hệ thống suốt 7 ngày. Chỉ code của dự án ghi khoá này
+     * nên rác gần như không thể xảy ra, nhưng cái giá khi xảy ra quá đắt so với ba dòng phòng xa.</p>
+     *
+     * <p>Chọn <b>xoá khoá hỏng rồi coi như chưa từng logout</b> thay vì coi như đã thu hồi: giữ
+     * lại một khoá không đọc được sẽ khoá vĩnh viễn tài khoản mà không ai sửa được ngoài việc
+     * vào tận Redis. Đánh đổi là bỏ lỡ đúng một mốc thu hồi trong một tình huống gần như không
+     * tồn tại — rẻ hơn nhiều.</p>
+     */
+    private long parseLogoutTime(String email, String rawValue) {
+        try {
+            return Long.parseLong(rawValue);
+        } catch (NumberFormatException ex) {
+            redis.delete(LOGOUT_TIME_PREFIX + email);
+            return 0L;
+        }
     }
 }

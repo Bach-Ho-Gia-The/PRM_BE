@@ -2,6 +2,7 @@ package com.structure.springboot.features.account.dto.request;
 
 import com.structure.springboot.common.config.JacksonConfig;
 import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import tools.jackson.databind.annotation.JsonDeserialize;
 
@@ -14,16 +15,20 @@ import tools.jackson.databind.annotation.JsonDeserialize;
  * không có gì để quên kiểm tra.</p>
  *
  * <p>Tên thật, số điện thoại, ngày sinh… <b>không</b> ở đây mà thuộc {@code PATCH /profiles/me}.</p>
+ *
+ * <p><b>{@code currentPassword} là bắt buộc:</b> email là thứ dùng để khôi phục tài khoản, nên
+ * đổi được email là đổi được chủ sở hữu. Không hỏi lại mật khẩu thì một chiếc máy quên khoá màn
+ * hình — hay một token bị đánh cắp — đủ để chiếm tài khoản vĩnh viễn.</p>
  */
 public record AccountSelfUpdateRequest(
-
-        @Size(max = 50, message = "Username must not exceed 50 characters")
-        @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)
-        String username,
 
         @Email(message = "Email must be valid")
         @Size(max = 100, message = "Email must not exceed 100 characters")
         @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)
-        String email
+        String email,
+
+        @NotBlank(message = "Current password is required")
+        @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)
+        String currentPassword
 ) {
 }

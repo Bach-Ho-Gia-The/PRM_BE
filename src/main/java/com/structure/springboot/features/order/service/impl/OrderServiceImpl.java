@@ -8,14 +8,17 @@ import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.features.order.config.OrderProperties;
 import com.structure.springboot.features.order.dto.request.OrderItemRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
+import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
 import com.structure.springboot.features.order.dto.response.OrderResponse;
 import com.structure.springboot.features.order.dto.response.OrderSummaryResponse;
 import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.order.entity.OrderItemEntity;
+import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.order.service.OrderService;
+import com.structure.springboot.features.order.specification.OrderSpecifications;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
 import com.structure.springboot.features.product.enums.ProductSize;
@@ -24,6 +27,7 @@ import com.structure.springboot.features.product.repository.ProductVariantReposi
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +36,7 @@ import java.security.SecureRandom;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -51,6 +56,21 @@ public class OrderServiceImpl implements OrderService {
      * Dùng ở đúng một chỗ nhưng giữ làm hằng vì chính bộ ký tự này là quy ước của mã đơn.
      */
     private static final String ORDER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    /**
+     * Luật chuyển trạng thái đơn. Giữ nguyên dạng bảng vì đây CHÍNH LÀ luật nghiệp vụ — viết thành
+     * chuỗi if rải rác thì muốn biết "từ SHIPPING đi đâu được" phải đọc cả hàm.
+     *
+     * <p>{@code COMPLETED} và {@code CANCELLED} là ngõ cụt, nhờ vậy huỷ đơn hai lần tự bị chặn —
+     * không chặn thì mỗi lần huỷ lại cộng kho một lần, kho phình lên từ hư không.</p>
+     */
+    private static final Map<OrderStatus, EnumSet<OrderStatus>> ALLOWED_TRANSITIONS = Map.of(
+            OrderStatus.PENDING, EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.CANCELLED),
+            OrderStatus.CONFIRMED, EnumSet.of(OrderStatus.SHIPPING, OrderStatus.CANCELLED),
+            OrderStatus.SHIPPING, EnumSet.of(OrderStatus.COMPLETED),
+            OrderStatus.COMPLETED, EnumSet.noneOf(OrderStatus.class),
+            OrderStatus.CANCELLED, EnumSet.noneOf(OrderStatus.class)
+    );
 
     private final SecureRandom random = new SecureRandom();
 
@@ -83,9 +103,10 @@ public class OrderServiceImpl implements OrderService {
                 .map(OrderItemRequest::productId)
                 .collect(Collectors.toSet());
 
-        // Nạp sẵn theo lô. Trước đây mỗi dòng hàng bắn 2 câu SQL (một tra sản phẩm, một tra biến
-        // thể) nên giỏ 20 món là 40 câu. Giờ cố định 2 câu, bất kể giỏ to tới đâu.
-        Map<UUID, ProductEntity> products = productRepository.findAllById(productIds).stream()
+        // Khoá đọc Product đến khi đơn commit: admin thay ảnh phải chờ snapshot của đơn ghi xong
+        // trước khi quyết định có được xóa file cũ không. Khoá theo ID tăng dần để tránh deadlock.
+        // Vẫn nạp cả giỏ theo một query thay vì n+1 truy vấn.
+        Map<UUID, ProductEntity> products = productRepository.findByIdInOrderByIdAsc(productIds).stream()
                 .collect(Collectors.toMap(ProductEntity::getId, Function.identity()));
 
         // Khoá map là cặp (sản phẩm, size) vì đó mới là thứ định danh một dòng tồn kho.
@@ -155,6 +176,75 @@ public class OrderServiceImpl implements OrderService {
             ));
         }
         return merged.values();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<OrderSummaryResponse> getOrders(OrderStatus status, Pageable pageable) {
+        Specification<OrderEntity> spec = Specification.allOf(OrderSpecifications.hasStatus(status));
+
+        return PageResponse.from(orderRepository.findAll(spec, pageable).map(orderMapper::toSummaryResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public OrderResponse getOrderById(UUID id) {
+        return orderMapper.toResponse(orderRepository.findWithItemsById(id)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id)));
+    }
+
+    /**
+     * Chuyển trạng thái đơn theo đúng bảng {@link #ALLOWED_TRANSITIONS}.
+     *
+     * <p>Đọc đơn kèm dòng hàng ngay từ đầu: nhánh huỷ cần duyệt hết dòng hàng để hoàn kho, mà
+     * tách làm hai lần đọc thì nhánh thường phải trả giá cho nhánh hiếm.</p>
+     */
+    @Override
+    @Transactional
+    public OrderResponse updateStatus(UUID id, OrderStatusUpdateRequest request) {
+        OrderEntity order = orderRepository.findWithItemsById(id)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id));
+
+        OrderStatus current = order.getStatus();
+        OrderStatus next = request.status();
+
+        if (!ALLOWED_TRANSITIONS.getOrDefault(current, EnumSet.noneOf(OrderStatus.class)).contains(next)) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "Cannot change order status from " + current + " to " + next);
+        }
+
+        if (next == OrderStatus.CANCELLED) {
+            restoreStock(order);
+        }
+        order.setStatus(next);
+
+        return orderMapper.toResponse(orderRepository.save(order));
+    }
+
+    /**
+     * Trả hàng về kho khi huỷ đơn.
+     *
+     * <p>Nạp biến thể theo lô đúng như lúc đặt hàng, không tra từng dòng. Biến thể có thể đã bị
+     * xoá khỏi danh mục sau khi khách đặt — lúc đó không còn chỗ nào để cộng trả, bỏ qua dòng đó
+     * chứ không chặn việc huỷ đơn.</p>
+     */
+    private void restoreStock(OrderEntity order) {
+        Set<UUID> productIds = order.getItems().stream()
+                .map(item -> item.getProduct().getId())
+                .collect(Collectors.toSet());
+
+        Map<String, ProductVariantEntity> variants = productVariantRepository
+                .findByProductIdIn(productIds).stream()
+                .collect(Collectors.toMap(
+                        variant -> variantKey(variant.getProduct().getId(), variant.getSize()),
+                        Function.identity()));
+
+        for (OrderItemEntity item : order.getItems()) {
+            ProductVariantEntity variant = variants.get(variantKey(item.getProduct().getId(), item.getSize()));
+            if (variant != null) {
+                variant.setStockQuantity(variant.getStockQuantity() + item.getQuantity());
+            }
+        }
     }
 
     @Override

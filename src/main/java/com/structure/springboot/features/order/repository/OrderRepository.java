@@ -5,13 +5,24 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 import java.util.UUID;
 
 @Repository
-public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
+public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
+        JpaSpecificationExecutor<OrderEntity> {
+
+    /**
+     * Đơn kèm dòng hàng, dành cho màn chi tiết của admin và cho việc hoàn kho khi huỷ.
+     *
+     * <p>Không có {@code @EntityGraph} thì mỗi lần đụng {@code order.getItems()} lại thêm một câu
+     * SQL, mà hoàn kho thì bắt buộc phải duyệt hết dòng hàng.</p>
+     */
+    @EntityGraph(attributePaths = {"items"})
+    Optional<OrderEntity> findWithItemsById(UUID id);
 
     boolean existsByOrderNumber(String orderNumber);
 

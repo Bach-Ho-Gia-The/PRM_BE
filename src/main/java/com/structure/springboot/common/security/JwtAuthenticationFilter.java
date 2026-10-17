@@ -61,18 +61,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 Claims claims = jwtService.parseClaims(token);
 
                 // 2. Kiểm tra bắt buộc phải là ACCESS token
-                String typ = claims.get("typ", String.class);
-                if (typ != null && !"access".equals(typ)) {
+                // Bỏ vế "typ != null": token thiếu claim này từng được thả cho qua, tức là chốt
+                // chặn sẽ im lặng mở ra nếu có ngày phát sinh một nhánh phát token quên gắn typ.
+                if (!"access".equals(claims.get("typ", String.class))) {
                     throw new ApiException(ErrorCode.UNAUTHORIZED, "Invalid token type: expected access token");
                 }
 
                 String email = claims.getSubject();
 
+                // Thiếu "sub" thì không tra được mốc thu hồi, mà bỏ qua khâu tra đó nghĩa là
+                // token vẫn sống sau khi người dùng đã bấm logout-all. Từ chối thẳng.
+                if (email == null) {
+                    throw new ApiException(ErrorCode.UNAUTHORIZED, "Token is missing the subject claim");
+                }
+
                 // 3. Kiểm tra token đã bị thu hồi chưa (logout phiên / logout-all / đổi mật khẩu).
                 //    Gộp cả hai điều kiện vào một lần gọi Redis để không làm chậm mọi request.
                 long issuedAt = claims.getIssuedAt() != null ? claims.getIssuedAt().getTime() : 0L;
-                if (email != null
-                        && refreshTokenRedis.isAccessTokenRevoked(email, claims.get("sid", String.class), issuedAt)) {
+                if (refreshTokenRedis.isAccessTokenRevoked(email, claims.get("sid", String.class), issuedAt)) {
                     throw new ApiException(ErrorCode.UNAUTHORIZED, "Session has been revoked. Please sign in again.");
                 }
 

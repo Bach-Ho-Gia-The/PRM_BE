@@ -9,8 +9,8 @@ import tools.jackson.databind.annotation.JsonDeserialize;
 /**
  * Đăng nhập bằng <b>email</b>.
  *
- * <p>Cột {@code username} vẫn tồn tại trên {@code accounts} để hiển thị, nhưng không phải là
- * chìa khoá đăng nhập. Chọn email vì nó đã là danh tính xuyên suốt hệ thống: claim {@code sub}
+ * <p>Email là danh tính đăng nhập duy nhất — {@code accounts} không còn cột nào khác đóng vai
+ * định danh. Chọn email vì nó đã xuyên suốt hệ thống: claim {@code sub}
  * của token là email, mốc thu hồi phiên trong Redis cũng cắm theo email.</p>
  *
  * <p>Giới hạn 100 ký tự để khớp đúng độ dài cột {@code accounts.email}; để 50 như trước thì

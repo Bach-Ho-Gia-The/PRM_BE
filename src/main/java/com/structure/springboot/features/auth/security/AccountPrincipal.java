@@ -19,20 +19,15 @@ import java.util.UUID;
  * <p>Giữ sẵn {@code id} và {@code roleName} để sau khi xác thực xong là build JWT được ngay,
  * KHÔNG phải query DB lần thứ hai.</p>
  *
- * <p><b>Cố ý lệch hợp đồng một chỗ:</b> {@code getUsername()} trả về cột {@code username} chứ
- * không phải email, trong khi chìa khoá đăng nhập của dự án đã là email. Hợp đồng của
- * {@code UserDetails} nói hàm này nên trả chuỗi dùng để xác thực, nhưng đổi thì
- * {@code LoginResponse.username} cũng hoá thành email và frontend mất chỗ lấy tên hiển thị.
- * An toàn vì không nhánh nào trong dự án đọc {@code authentication.getName()} ở luồng login —
- * {@code JwtService} nhận email qua tham số riêng. Nếu sau này cần đúng chuẩn thì thêm field
- * {@code displayName} cho response rồi mới đổi.</p>
+ * <p>{@code getUsername()} trả về <b>email</b> — đúng hợp đồng của {@code UserDetails} (chuỗi
+ * dùng để xác thực). Cột {@code accounts.username} đã bị xoá: danh tính đăng nhập chỉ còn email,
+ * tên hiển thị thuộc về {@code profiles.fullName}.</p>
  */
 @Getter
 @RequiredArgsConstructor
 public class AccountPrincipal implements UserDetails {
 
     private final UUID id;
-    private final String username;
     private final String email;
     private final String password;
     private final String roleName;
@@ -42,13 +37,18 @@ public class AccountPrincipal implements UserDetails {
     public static AccountPrincipal from(AccountEntity account) {
         return new AccountPrincipal(
                 account.getId(),
-                account.getUsername(),
                 account.getEmail(),
                 account.getPassword(),
                 account.getRole() != null ? account.getRole().getRoleName() : null,
                 account.getStatus(),
                 account.getLockedUntil()
         );
+    }
+
+    /** Chuỗi định danh mà Spring Security dùng để xác thực — dự án đăng nhập bằng email. */
+    @Override
+    public String getUsername() {
+        return email;
     }
 
     @Override

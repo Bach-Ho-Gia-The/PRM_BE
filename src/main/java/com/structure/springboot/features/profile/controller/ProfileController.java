@@ -9,15 +9,20 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.UUID;
 
 /**
  * Hồ sơ cá nhân — <b>chỉ thao tác được trên hồ sơ của chính mình</b>.
  *
- * <p>Không có endpoint nhận id người khác: id luôn lấy từ token. Endpoint cho admin xem hồ sơ
- * người dùng bất kỳ để dành Đợt 4, lúc đó mới có phân quyền theo vai trò.</p>
+ * <p>Người dùng thường chỉ thao tác được trên hồ sơ của chính mình — id luôn lấy từ token.
+ * Riêng {@code GET /profiles/{accountId}} nhận id người khác nên khoá bằng {@code hasRole(ADMIN)}.</p>
  *
  * <p>{@code /profiles} không nằm trong {@code app.security.whitelist} nên
  * {@code anyRequest().authenticated()} tự chặn request không mang token.</p>
@@ -42,6 +47,42 @@ public class ProfileController {
                         .path(request.getRequestURI())
                         .build()
         );
+    }
+
+    /**
+     * Admin xem hồ sơ của một tài khoản bất kỳ.
+     *
+     * <p>Đặt sau {@code /me} không gây nhập nhằng định tuyến: Spring luôn ưu tiên chuỗi cố định
+     * hơn biến đường dẫn, nên {@code /profiles/me} vẫn rơi vào đúng endpoint bên trên.</p>
+     */
+    @GetMapping("/{accountId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<ApiResponse<ProfileResponse>> getProfileByAccountId(
+            @PathVariable UUID accountId,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<ProfileResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Profile retrieved successfully")
+                        .result(profileService.getByAccountId(accountId))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Avatar belongs to the authenticated account; there is no accountId/publicId in the request. */
+    @PutMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProfileResponse>> uploadMyAvatar(
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(ApiResponse.<ProfileResponse>builder()
+                .code(HttpStatus.OK.value())
+                .message("Profile avatar uploaded successfully")
+                .result(profileService.uploadAvatar(AuthenticatedUser.requireId(currentUser), file))
+                .path(request.getRequestURI())
+                .build());
     }
 
     @PatchMapping("/me")

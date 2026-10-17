@@ -20,10 +20,6 @@ import java.util.UUID;
  * gọi được API sửa tài khoản là chiếm luôn được tài khoản đó.</p>
  */
 public record AccountUpdateRequest(
-        @Size(max = 50, message = "Username must not exceed 50 characters")
-        @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)
-        String username,
-
         @Email(message = "Email must be valid")
         @Size(max = 100, message = "Email must not exceed 100 characters")
         @JsonDeserialize(using = JacksonConfig.StringTrimDeserializer.class)

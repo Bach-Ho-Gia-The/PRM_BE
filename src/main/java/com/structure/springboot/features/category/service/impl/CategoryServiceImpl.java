@@ -2,28 +2,35 @@ package com.structure.springboot.features.category.service.impl;
 
 import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
-import com.structure.springboot.features.category.dto.request.CategoryRequest;
-import com.structure.springboot.features.category.dto.request.CategoryUpdateRequest;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.util.SlugUtils;
-import com.structure.springboot.infrastructure.persistence.RecordStatus;
-import com.structure.springboot.infrastructure.persistence.StatusSpecifications;
+import com.structure.springboot.common.util.SortWhitelist;
+import com.structure.springboot.features.category.dto.request.CategoryRequest;
+import com.structure.springboot.features.category.dto.request.CategoryUpdateRequest;
+import com.structure.springboot.features.category.dto.response.CategoryPublicResponse;
 import com.structure.springboot.features.category.dto.response.CategoryResponse;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.features.category.mapper.CategoryMapper;
 import com.structure.springboot.features.category.repository.CategoryRepository;
 import com.structure.springboot.features.category.service.CategoryService;
+import com.structure.springboot.features.category.specification.CategorySpecifications;
+import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.repository.ProductRepository;
+import com.structure.springboot.infrastructure.persistence.RecordStatus;
+import com.structure.springboot.infrastructure.persistence.StatusSpecifications;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class CategoryServiceImpl implements CategoryService {
+
+    private static final Set<String> CATEGORY_SORT_FIELDS = Set.of("categoryName", "slug", "createdAt", "updatedAt");
 
     private final CategoryRepository categoryRepository;
     private final ProductRepository productRepository;
@@ -32,14 +39,15 @@ public class CategoryServiceImpl implements CategoryService {
     @Override
     @Transactional
     public CategoryResponse createCategory(CategoryRequest request) {
-        if (categoryRepository.existsByCategoryNameIgnoreCase(request.categoryName().trim())) {
-            throw new ApiException(ErrorCode.CONFLICT, "Category already exists: " + request.categoryName());
+        String name = normalizeName(request.categoryName());
+        if (categoryRepository.existsByCategoryNameIgnoreCase(name)) {
+            throw new ApiException(ErrorCode.CONFLICT, "Category already exists: " + name);
         }
 
         CategoryEntity entity = categoryMapper.toEntity(request);
-        entity.setCategoryName(request.categoryName().trim());
-        entity.setSlug(resolveSlug(request.slug(), request.categoryName(), null));
-
+        entity.setCategoryName(name);
+        entity.setSlug(resolveSlug(request.slug(), name, null));
+        // Category mới mặc định ACTIVE và được phép chưa có Product.
         return categoryMapper.toResponse(categoryRepository.save(entity));
     }
 
@@ -48,25 +56,35 @@ public class CategoryServiceImpl implements CategoryService {
     public CategoryResponse updateCategory(UUID id, CategoryUpdateRequest request) {
         CategoryEntity entity = requireManageable(id);
 
-        // PATCH: không gửi categoryName nghĩa là giữ nguyên tên cũ, bỏ qua luôn bước kiểm tra trùng.
-        String newName = request.categoryName() == null ? null : request.categoryName().trim();
+        String newName = request.categoryName() == null ? null : normalizeName(request.categoryName());
         if (newName != null && categoryRepository.existsByCategoryNameIgnoreCaseAndIdNot(newName, id)) {
             throw new ApiException(ErrorCode.CONFLICT, "Category already exists: " + newName);
         }
+        if (request.status() == RecordStatus.DELETED) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Use DELETE to remove a category");
+        }
 
-        categoryMapper.updateEntity(request, entity);
+        boolean nameChanged = newName != null && !newName.equals(entity.getCategoryName());
+        String requestedSlug = request.slug();
+        if (requestedSlug != null && requestedSlug.isEmpty() && !nameChanged) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "A new category name is required to regenerate its slug");
+        }
+        // PATCH đổi tên thật sự + slug thiếu/null/"" => sinh slug mới. Slug tường minh thắng;
+        // đổi slug riêng cũng được. Kiểm tra trùng TRƯỚC khi ghi để tên+slug luôn atomic.
+        String newSlug = nameChanged || requestedSlug != null
+                ? resolveSlug(requestedSlug == null || requestedSlug.isEmpty() ? null : requestedSlug,
+                        newName != null ? newName : entity.getCategoryName(), id)
+                : null;
+
         if (newName != null) {
             entity.setCategoryName(newName);
         }
-
-        // Slug CỐ Ý không tự đổi theo tên: đường dẫn /bo-suu-tap/{slug} đã nằm trong link chia sẻ.
-        if (request.slug() != null) {
-            entity.setSlug(resolveSlug(request.slug(), entity.getCategoryName(), id));
+        if (newSlug != null) {
+            entity.setSlug(newSlug);
         }
         if (request.status() != null) {
             entity.setStatus(request.status());
         }
-
         return categoryMapper.toResponse(categoryRepository.save(entity));
     }
 
@@ -75,9 +93,10 @@ public class CategoryServiceImpl implements CategoryService {
     public void deleteCategory(UUID id) {
         CategoryEntity entity = requireManageable(id);
 
-        // Vẫn chặn khi còn sản phẩm dù đây là xoá mềm: danh mục biến mất mà sản phẩm vẫn trỏ vào nó
-        // thì trang danh mục của frontend sẽ trỏ vào hư không, và admin không hiểu vì sao hàng mất.
-        if (productRepository.existsByCategoryId(id)) {
+        // Product ACTIVE/HIDDEN/legacy null chặn xoá; Product DELETED không chặn.
+        // Lọc ở DB bằng EXISTS, không tải danh sách Product hoặc xoá cascade.
+        if (productRepository.exists(StatusSpecifications.<ProductEntity>notDeleted()
+                .and((root, query, cb) -> cb.equal(root.get("category").get("id"), id)))) {
             throw new ApiException(ErrorCode.CONFLICT,
                     "Cannot delete category that still contains products: " + entity.getCategoryName());
         }
@@ -88,51 +107,81 @@ public class CategoryServiceImpl implements CategoryService {
 
     @Override
     @Transactional(readOnly = true)
-    public CategoryResponse getCategoryById(UUID id) {
+    public CategoryResponse getAdminCategoryById(UUID id) {
+        return categoryMapper.toResponse(requireManageable(id));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<CategoryResponse> getAdminCategories(Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), CATEGORY_SORT_FIELDS);
+        return PageResponse.from(categoryRepository
+                .findAll(StatusSpecifications.<CategoryEntity>notDeleted(), pageable)
+                .map(categoryMapper::toResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CategoryPublicResponse getPublicCategoryById(UUID id) {
         return categoryRepository.findById(id)
-                .filter(CategoryServiceImpl::isVisible)
-                .map(categoryMapper::toResponse)
+                .filter(CategoryServiceImpl::isPublic)
+                .map(categoryMapper::toPublicResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + id));
     }
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<CategoryResponse> getAllCategories(Pageable pageable) {
-        // map() của Page giữ nguyên thông tin phân trang, chỉ đổi kiểu phần tử —
-        // không được .getContent().stream() vì làm vậy là mất totalElements/totalPages.
-        return PageResponse.from(categoryRepository
-                .findAll(StatusSpecifications.<CategoryEntity>visible(), pageable)
-                .map(categoryMapper::toResponse));
+    public CategoryPublicResponse getPublicCategoryBySlug(String slug) {
+        return categoryRepository.findBySlug(slug)
+                .filter(CategoryServiceImpl::isPublic)
+                .map(categoryMapper::toPublicResponse)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with slug: " + slug));
     }
 
-    /** Cho phép thao tác trên danh mục đang ẩn, chỉ chặn danh mục đã xoá (trả 404 như chưa từng có). */
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<CategoryPublicResponse> getPublicCategories(Pageable pageable) {
+        SortWhitelist.check(pageable.getSort(), CATEGORY_SORT_FIELDS);
+        return PageResponse.from(categoryRepository
+                .findAll(CategorySpecifications.active(), pageable)
+                .map(categoryMapper::toPublicResponse));
+    }
+
     private CategoryEntity requireManageable(UUID id) {
         CategoryEntity entity = categoryRepository.findById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + id));
-
         if (entity.getStatus() == RecordStatus.DELETED) {
             throw new ApiException(ErrorCode.NOT_FOUND, "Category not found with id: " + id);
         }
         return entity;
     }
 
-    /** Hàng dữ liệu cũ chưa có cột status (null) được coi là đang hoạt động. */
-    private static boolean isVisible(CategoryEntity entity) {
-        return entity.getStatus() == null || entity.getStatus() == RecordStatus.ACTIVE;
+    /** Khác Product legacy null: Category phải ACTIVE tường minh mới được thấy ở cửa hàng. */
+    private static boolean isPublic(CategoryEntity entity) {
+        return entity.getStatus() == RecordStatus.ACTIVE;
     }
 
-    /** Chuẩn hoá slug và bảo đảm không trùng. {@code currentId} null nghĩa là đang tạo mới. */
+    private String normalizeName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Category name is required");
+        }
+        String trimmed = name.trim();
+        if (trimmed.length() > 100) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Category name must not exceed 100 characters");
+        }
+        return trimmed;
+    }
+
+    /** Slug trùng kể cả của Category DELETED cũng bị chặn; giữ URL cũ không alias. */
     private String resolveSlug(String requestedSlug, String name, UUID currentId) {
         String slug = SlugUtils.toSlug(requestedSlug != null ? requestedSlug : name);
-        if (slug == null) {
-            throw new ApiException(ErrorCode.BAD_REQUEST,
-                    "Cannot generate slug from category name, please provide one explicitly");
+        if (slug == null || slug.length() > 100) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Cannot generate a valid category slug");
         }
 
         boolean taken = currentId == null
                 ? categoryRepository.existsBySlug(slug)
                 : categoryRepository.existsBySlugAndIdNot(slug, currentId);
-
         if (taken) {
             throw new ApiException(ErrorCode.CONFLICT, "Category slug already exists: " + slug);
         }

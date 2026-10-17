@@ -16,6 +16,9 @@ public interface AccountMapper {
 
     @Mapping(target = "roleId", source = "role.id")
     @Mapping(target = "roleName", source = "role.roleName")
+    // Chỉ báo CÓ hay KHÔNG, tuyệt đối không lộ chuỗi băm ra ngoài. Frontend cần cờ này để biết
+    // nên hiện form "đổi mật khẩu" hay form "đặt mật khẩu lần đầu" cho tài khoản Google.
+    @Mapping(target = "hasPassword", expression = "java(entity.getPassword() != null)")
     AccountResponse toResponse(AccountEntity entity);
 
     @Mapping(target = "id", ignore = true)

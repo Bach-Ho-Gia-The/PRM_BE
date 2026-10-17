@@ -35,6 +35,12 @@ public class AccountUserDetailsService implements UserDetailsService {
     @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         return accountRepository.findByEmailIgnoreCase(username)
+                // Tài khoản Google chưa đặt mật khẩu thì coi như không tồn tại với luồng
+                // email + mật khẩu. Chặn ngay tại đây chứ không phó mặc cho PasswordEncoder xử
+                // lý chuỗi băm null — hành vi đó không phải hợp đồng được bảo đảm.
+                // Spring gộp UsernameNotFoundException thành BadCredentials nên người ngoài
+                // vẫn chỉ thấy đúng một câu "Invalid email or password", không dò được gì.
+                .filter(account -> account.getPassword() != null)
                 .map(AccountPrincipal::from)
                 .orElseThrow(() -> new UsernameNotFoundException("Account not found with email: " + username));
     }

@@ -5,6 +5,7 @@ import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.security.AuthenticatedUser;
 import com.structure.springboot.features.account.dto.request.AccountRequest;
 import com.structure.springboot.features.account.dto.request.AccountSelfUpdateRequest;
+import com.structure.springboot.features.account.dto.request.AccountStatusUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountUpdateRequest;
 import com.structure.springboot.features.account.dto.request.ChangePasswordRequest;
 import com.structure.springboot.features.account.dto.response.AccountResponse;
@@ -18,6 +19,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +32,7 @@ public class AccountController {
 
     private final AccountService accountService;
 
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<ApiResponse<AccountResponse>> createAccount(
             @Valid @RequestBody AccountRequest requestDTO,
@@ -49,17 +52,20 @@ public class AccountController {
      * PATCH = cập nhật MỘT PHẦN: field nào không gửi trong JSON thì giữ nguyên giá trị cũ.
      * Dùng PATCH thay PUT vì PUT theo chuẩn HTTP nghĩa là thay thế TOÀN BỘ tài nguyên.
      */
+    @PreAuthorize("hasRole('ADMIN')")
     @PatchMapping("/{id}")
     public ResponseEntity<ApiResponse<AccountResponse>> updateAccount(
             @PathVariable UUID id,
             @Valid @RequestBody AccountUpdateRequest requestDTO,
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
             HttpServletRequest request) {
 
         return ResponseEntity.ok(
                 ApiResponse.<AccountResponse>builder()
                         .code(HttpStatus.OK.value())
                         .message("Account updated successfully")
-                        .result(accountService.updateAccount(id, requestDTO))
+                        .result(accountService.updateAccount(
+                                id, AuthenticatedUser.requireId(currentUser), requestDTO))
                         .path(request.getRequestURI())
                         .build()
         );
@@ -74,7 +80,7 @@ public class AccountController {
      * của chính mình. Còn việc tự giải mã JWT ở phía client để moi id ra là sai nguyên tắc —
      * payload JWT chỉ được ký chứ không được mã hoá, client không có quyền tin nội dung bên trong.</p>
      *
-     * <p><b>Chỉ trả phần định danh</b> (username, email, role, mốc thời gian). Tên thật, số điện
+     * <p><b>Chỉ trả phần định danh</b> (email, role, mốc thời gian). Tên thật, số điện
      * thoại, ngày sinh, ảnh đại diện nằm ở {@code GET /profiles/me} — hai thứ khác nhau nên để
      * hai endpoint khác nhau.</p>
      */
@@ -94,7 +100,7 @@ public class AccountController {
     }
 
     /**
-     * Người dùng tự sửa username/email của CHÍNH MÌNH.
+     * Người dùng tự sửa email của CHÍNH MÌNH (phải gõ lại mật khẩu hiện tại để xác minh).
      *
      * <p>Dùng {@code AccountSelfUpdateRequest} thay vì {@code AccountUpdateRequest} vì bản kia có
      * {@code roleId} — để lọt vào đây là ai cũng tự nâng mình lên ADMIN được.</p>
@@ -146,12 +152,37 @@ public class AccountController {
         );
     }
 
+    /**
+     * Khoá, mở khoá hoặc vô hiệu hoá một tài khoản. Đổi trạng thái là tài nguyên con chứ không
+     * phải một trường của {@code PATCH /accounts/{id}} — cùng quy ước với {@code /orders/{id}/status}.
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<ApiResponse<AccountResponse>> updateAccountStatus(
+            @PathVariable UUID id,
+            @Valid @RequestBody AccountStatusUpdateRequest requestDTO,
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<AccountResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Account status updated successfully")
+                        .result(accountService.updateStatus(
+                                id, AuthenticatedUser.requireId(currentUser), requestDTO))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteAccount(
             @PathVariable UUID id,
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
             HttpServletRequest request) {
 
-        accountService.deleteAccount(id);
+        accountService.deleteAccount(id, AuthenticatedUser.requireId(currentUser));
         return ResponseEntity.ok(
                 ApiResponse.<Void>builder()
                         .code(HttpStatus.OK.value())
@@ -161,6 +192,7 @@ public class AccountController {
         );
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<AccountResponse>> getAccountById(
             @PathVariable UUID id,
@@ -182,6 +214,7 @@ public class AccountController {
      * ổn định — thiếu {@code sort} thì DB được tự do trả thứ tự tuỳ ý, trang 2 có thể lặp lại
      * bản ghi đã thấy ở trang 1.
      */
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping
     public ResponseEntity<ApiResponse<PageResponse<AccountResponse>>> getAllAccounts(
             @ParameterObject
