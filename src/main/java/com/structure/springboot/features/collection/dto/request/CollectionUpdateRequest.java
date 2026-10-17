@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Size;
 
 /**
  * PATCH metadata khi BST đang HIDDEN. expectedVersion lấy từ response đọc BST; các field
- * metadata vắng/null giữ nguyên, clearCoverImage=true xoá URL ảnh bìa.
+ * metadata vắng/null giữ nguyên, clearCoverImage=true xoá URL ảnh bìa (và file managed).
  * Trạng thái và sản phẩm có thao tác riêng để không bỏ qua các quy tắc đăng/xoá BST.
  */
 public record CollectionUpdateRequest(

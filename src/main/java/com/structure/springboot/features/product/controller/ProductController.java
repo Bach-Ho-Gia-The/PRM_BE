@@ -4,6 +4,7 @@ import com.structure.springboot.common.response.ApiResponse;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.product.dto.request.ProductFilter;
 import com.structure.springboot.features.product.dto.request.ProductRequest;
+import com.structure.springboot.features.product.dto.request.ProductThumbnailRequest;
 import com.structure.springboot.features.product.dto.request.ProductUpdateRequest;
 import com.structure.springboot.features.product.dto.response.ProductDetailResponse;
 import com.structure.springboot.features.product.dto.response.ProductResponse;
@@ -16,9 +17,11 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -62,6 +65,62 @@ public class ProductController {
                         .path(request.getRequestURI())
                         .build()
         );
+    }
+
+    /** Upload a gallery image; first image becomes thumbnail if none is selected. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping(value = "/admin/{id}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> addImage(
+            @PathVariable UUID id,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(defaultValue = "false") boolean asThumbnail,
+            HttpServletRequest request) {
+        return imageResponse(productService.addImage(id, file, asThumbnail),
+                "Product image uploaded successfully", HttpStatus.CREATED, request);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PutMapping(value = "/admin/{id}/images/{imageId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> replaceImage(
+            @PathVariable UUID id, @PathVariable UUID imageId,
+            @RequestPart("file") MultipartFile file, HttpServletRequest request) {
+        return imageResponse(productService.replaceImage(id, imageId, file),
+                "Product image replaced successfully", HttpStatus.OK, request);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/admin/{id}/images/{imageId}")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> removeImage(
+            @PathVariable UUID id, @PathVariable UUID imageId, HttpServletRequest request) {
+        return imageResponse(productService.removeImage(id, imageId),
+                "Product image removed successfully", HttpStatus.OK, request);
+    }
+
+    /** Upload a new thumbnail, replacing the selected gallery row when there is one. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PutMapping(value = "/admin/{id}/thumbnail", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> uploadThumbnail(
+            @PathVariable UUID id, @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) {
+        return imageResponse(productService.uploadThumbnail(id, file),
+                "Product thumbnail uploaded successfully", HttpStatus.OK, request);
+    }
+
+    /** Choose an existing gallery image without uploading/deleting anything. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/admin/{id}/thumbnail")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> selectThumbnail(
+            @PathVariable UUID id, @Valid @RequestBody ProductThumbnailRequest body,
+            HttpServletRequest request) {
+        return imageResponse(productService.selectThumbnail(id, body),
+                "Product thumbnail selected successfully", HttpStatus.OK, request);
+    }
+
+    private ResponseEntity<ApiResponse<ProductDetailResponse>> imageResponse(
+            ProductDetailResponse result, String message, HttpStatus status, HttpServletRequest request) {
+        return ResponseEntity.status(status).body(ApiResponse.<ProductDetailResponse>builder()
+                .code(status.value()).message(message).result(result)
+                .path(request.getRequestURI()).build());
     }
 
     /** Xoá MỀM: giữ Product để không phá lịch sử đơn hàng. */

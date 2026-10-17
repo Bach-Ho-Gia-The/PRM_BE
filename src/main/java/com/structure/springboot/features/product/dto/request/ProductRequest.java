@@ -1,5 +1,6 @@
 package com.structure.springboot.features.product.dto.request;
 
+import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
@@ -48,6 +49,9 @@ public record ProductRequest(
         Boolean isFeatured,
 
         @NotNull(message = "Category ID is required")
-        UUID categoryId
+        UUID categoryId,
+
+        // Null keeps the pre-existing ACTIVE default. Admin can create HIDDEN before uploading.
+        RecordStatus status
 ) {
 }

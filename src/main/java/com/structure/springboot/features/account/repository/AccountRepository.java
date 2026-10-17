@@ -1,6 +1,8 @@
 package com.structure.springboot.features.account.repository;
 
 import com.structure.springboot.features.account.entity.AccountEntity;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -33,6 +35,10 @@ public interface AccountRepository extends JpaRepository<AccountEntity, UUID> {
     @Override
     @EntityGraph(attributePaths = {"role"})
     Optional<AccountEntity> findById(UUID id);
+
+    /** Serialize creation of a missing legacy profile with concurrent avatar edits. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<AccountEntity> findWithLockById(UUID id);
 
     @Override
     @EntityGraph(attributePaths = {"role"})

@@ -62,6 +62,10 @@ public class ProfileEntity extends BaseEntity {
     @Column(name = "avatar_url", length = 500)
     private String avatarUrl;
 
+    /** Null for Google/external/seed images; never returned to the client. */
+    @Column(name = "avatar_public_id", length = 500)
+    private String avatarPublicId;
+
     @Column(name = "address", length = 500)
     private String address;
 }

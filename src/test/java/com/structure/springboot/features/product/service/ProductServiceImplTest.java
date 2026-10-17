@@ -9,6 +9,8 @@ import com.structure.springboot.features.product.dto.request.ProductRequest;
 import com.structure.springboot.features.product.dto.request.ProductUpdateRequest;
 import com.structure.springboot.features.product.dto.response.ProductDetailResponse;
 import com.structure.springboot.features.product.entity.ProductEntity;
+import com.structure.springboot.features.order.repository.OrderItemRepository;
+import com.structure.springboot.infrastructure.external.cloudinary.ManagedImageService;
 import com.structure.springboot.features.product.mapper.ProductMapper;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.service.impl.ProductServiceImpl;
@@ -40,13 +42,14 @@ class ProductServiceImplTest {
     private final ProductRepository products = mock(ProductRepository.class);
     private final CategoryRepository categories = mock(CategoryRepository.class);
     private final ProductMapper mapper = mock(ProductMapper.class);
-    private final ProductServiceImpl service = new ProductServiceImpl(products, categories, mapper);
+    private final ProductServiceImpl service = new ProductServiceImpl(products, categories, mapper,
+            mock(OrderItemRepository.class), mock(ManagedImageService.class));
 
     @Test
     void createOnlyAcceptsActiveCategoryAndNameDoesNotReassignSlug() {
         CategoryEntity active = category(RecordStatus.ACTIVE);
         ProductRequest request = new ProductRequest("Summer", null, "QA-001", new BigDecimal("200"),
-                null, null, null, null, null, null, false, false, active.getId());
+                null, null, null, null, null, null, false, false, active.getId(), null);
         ProductEntity saved = ProductEntity.builder().name("Summer").sku("QA-001")
                 .price(new BigDecimal("200")).build();
         when(categories.findById(active.getId())).thenReturn(Optional.of(active));
@@ -58,7 +61,7 @@ class ProductServiceImplTest {
         assertEquals("summer", saved.getSlug());
 
         saved.setId(UUID.randomUUID());
-        when(products.findById(saved.getId())).thenReturn(Optional.of(saved));
+        when(products.findWithLockById(saved.getId())).thenReturn(Optional.of(saved));
         ProductUpdateRequest changeName = update("New Summer", null);
         service.updateProduct(saved.getId(), changeName);
         assertEquals("summer", saved.getSlug()); // PATCH name không đổi slug.
@@ -71,7 +74,7 @@ class ProductServiceImplTest {
             when(categories.findById(category.getId())).thenReturn(Optional.of(category));
             ApiException error = assertThrows(ApiException.class, () -> service.createProduct(
                     new ProductRequest("Summer", null, "QA-002", new BigDecimal("200"), null,
-                            null, null, null, null, null, false, false, category.getId())));
+                            null, null, null, null, null, false, false, category.getId(), null)));
             assertEquals(ErrorCode.CONFLICT, error.getErrorCode());
         }
         verify(products, never()).save(any());
@@ -84,7 +87,7 @@ class ProductServiceImplTest {
         CategoryEntity active = category(RecordStatus.ACTIVE);
         ProductEntity product = ProductEntity.builder().id(UUID.randomUUID()).name("Summer")
                 .sku("QA-003").slug("summer").category(hidden).status(RecordStatus.ACTIVE).build();
-        when(products.findById(product.getId())).thenReturn(Optional.of(product));
+        when(products.findWithLockById(product.getId())).thenReturn(Optional.of(product));
         when(products.save(product)).thenReturn(product);
         when(categories.findById(otherHidden.getId())).thenReturn(Optional.of(otherHidden));
         when(categories.findById(active.getId())).thenReturn(Optional.of(active));

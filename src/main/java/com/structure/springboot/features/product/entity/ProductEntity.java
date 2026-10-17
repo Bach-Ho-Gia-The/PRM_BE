@@ -64,6 +64,10 @@ public class ProductEntity extends SoftDeletableEntity {
     @Column(name = "thumbnail", length = 500)
     private String thumbnail;
 
+    /** Null for seed/external thumbnails; for managed images this matches the selected gallery image. */
+    @Column(name = "thumbnail_public_id", length = 500)
+    private String thumbnailPublicId;
+
     @Builder.Default
     @Column(name = "is_summer")
     private Boolean isSummer = false;
@@ -86,6 +90,6 @@ public class ProductEntity extends SoftDeletableEntity {
 
     @Builder.Default
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
-    @OrderBy("sortOrder ASC")
+    @OrderBy("sortOrder ASC, id ASC")
     private List<ProductImageEntity> images = new ArrayList<>();
 }

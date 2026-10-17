@@ -9,10 +9,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -67,6 +69,20 @@ public class ProfileController {
                         .path(request.getRequestURI())
                         .build()
         );
+    }
+
+    /** Avatar belongs to the authenticated account; there is no accountId/publicId in the request. */
+    @PutMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProfileResponse>> uploadMyAvatar(
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(ApiResponse.<ProfileResponse>builder()
+                .code(HttpStatus.OK.value())
+                .message("Profile avatar uploaded successfully")
+                .result(profileService.uploadAvatar(AuthenticatedUser.requireId(currentUser), file))
+                .path(request.getRequestURI())
+                .build());
     }
 
     @PatchMapping("/me")

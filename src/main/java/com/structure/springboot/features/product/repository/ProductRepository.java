@@ -1,6 +1,8 @@
 package com.structure.springboot.features.product.repository;
 
 import com.structure.springboot.features.product.entity.ProductEntity;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -8,6 +10,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,6 +32,14 @@ public interface ProductRepository extends JpaRepository<ProductEntity, UUID>,
 
     // Chặn xoá Category khi vẫn còn sản phẩm trỏ tới -> thay cho cascade đã gỡ bỏ
     boolean existsByCategoryId(UUID categoryId);
+
+    /** Serialize product image edits and metadata/status updates with checkout image snapshots. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<ProductEntity> findWithLockById(UUID id);
+
+    /** Checkout locks Product rows in a stable order until the order snapshot commits. */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    List<ProductEntity> findByIdInOrderByIdAsc(java.util.Collection<UUID> ids);
 
     // Tự động JOIN category khi tìm theo ID -> 1 câu SQL, không bị LazyInitException
     @Override

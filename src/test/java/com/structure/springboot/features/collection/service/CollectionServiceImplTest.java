@@ -14,6 +14,8 @@ import com.structure.springboot.features.collection.repository.CollectionReposit
 import com.structure.springboot.features.collection.service.impl.CollectionServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.repository.ProductRepository;
+import com.structure.springboot.infrastructure.external.cloudinary.ImageUploadResult;
+import com.structure.springboot.infrastructure.external.cloudinary.ManagedImageService;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -27,6 +29,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.math.BigDecimal;
 import java.util.Arrays;
@@ -41,6 +44,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -52,13 +57,15 @@ class CollectionServiceImplTest {
     @Mock private CollectionProductRepository collectionProductRepository;
     @Mock private ProductRepository productRepository;
     @Mock private EntityManager entityManager;
+    @Mock private ManagedImageService managedImageService;
 
     private CollectionServiceImpl service;
 
     @BeforeEach
     void setUp() {
         CollectionMapper mapper = Mappers.getMapper(CollectionMapper.class);
-        service = new CollectionServiceImpl(collectionRepository, collectionProductRepository, productRepository, mapper, entityManager);
+        service = new CollectionServiceImpl(collectionRepository, collectionProductRepository, productRepository,
+                mapper, entityManager, managedImageService);
     }
 
     @Test
@@ -365,6 +372,82 @@ class CollectionServiceImplTest {
 
         assertEquals(ErrorCode.NOT_FOUND, error.getErrorCode());
         verifyNoInteractions(collectionProductRepository);
+    }
+
+    @Test
+    void uploadCoverRequiresHiddenAndCurrentVersionBeforeUploading() {
+        CollectionEntity collection = collection(RecordStatus.HIDDEN);
+        collection.setVersion(5L);
+        when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
+        var file = new MockMultipartFile("file", "cover.png", "image/png", new byte[]{1});
+
+        assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class, () -> service.uploadCover(
+                collection.getId(), new CollectionVersionRequest(4L), file)).getErrorCode());
+        collection.setStatus(RecordStatus.ACTIVE);
+        assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class, () -> service.uploadCover(
+                collection.getId(), new CollectionVersionRequest(5L), file)).getErrorCode());
+        verify(managedImageService, never()).upload(any(), any());
+    }
+
+    @Test
+    void uploadCoverStagesNewUrlAndDeletesOldManagedFileBeforeCommit() {
+        CollectionEntity collection = collection(RecordStatus.HIDDEN);
+        collection.setCoverImageUrl("https://cdn/old.png");
+        collection.setCoverImagePublicId("prm/dev/collections/old");
+        when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
+        var file = new MockMultipartFile("file", "cover.png", "image/png", new byte[]{1});
+        when(managedImageService.upload(file, "collections"))
+                .thenReturn(new ImageUploadResult("https://cdn/new.png", "prm/dev/collections/new"));
+
+        var updated = service.uploadCover(collection.getId(), new CollectionVersionRequest(0L), file);
+
+        assertEquals("https://cdn/new.png", updated.coverImageUrl());
+        verify(collectionRepository).flush();
+        verify(managedImageService).deleteOrFail("prm/dev/collections/old", "collection", collection.getId());
+    }
+
+    @Test
+    void deletionFailureFromCoverReplacementReturnsErrorInsteadOfSuccess() {
+        CollectionEntity collection = collection(RecordStatus.HIDDEN);
+        collection.setCoverImagePublicId("prm/dev/collections/old");
+        when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
+        var file = new MockMultipartFile("file", "cover.png", "image/png", new byte[]{1});
+        when(managedImageService.upload(file, "collections"))
+                .thenReturn(new ImageUploadResult("https://cdn/new.png", "prm/dev/collections/new"));
+        doThrow(new ApiException(ErrorCode.BAD_GATEWAY, "Deletion failed"))
+                .when(managedImageService).deleteOrFail("prm/dev/collections/old", "collection", collection.getId());
+
+        assertEquals(ErrorCode.BAD_GATEWAY, assertThrows(ApiException.class,
+                () -> service.uploadCover(collection.getId(), new CollectionVersionRequest(0L), file)).getErrorCode());
+        verify(collectionRepository).flush();
+    }
+
+    @Test
+    void existingJsonClearCoverDeletesManagedImageAndRetainsExternalSeed() {
+        CollectionEntity collection = collection(RecordStatus.HIDDEN);
+        collection.setCoverImageUrl("https://cdn/old.png");
+        collection.setCoverImagePublicId("prm/dev/collections/old");
+        when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
+
+        var cleared = service.updateCollection(collection.getId(),
+                new CollectionUpdateRequest(0L, null, null, null, true));
+        assertNull(cleared.coverImageUrl());
+        assertNull(collection.getCoverImagePublicId());
+        verify(managedImageService).deleteOrFail("prm/dev/collections/old", "collection", collection.getId());
+    }
+
+    @Test
+    void jsonCannotAssignAnotherManagedCoverUrl() {
+        CollectionEntity collection = collection(RecordStatus.HIDDEN);
+        when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
+        String forged = "https://res.cloudinary.com/cloud/image/upload/prm/dev/collections/someone-else.png";
+        doThrow(new ApiException(ErrorCode.BAD_REQUEST, "Managed URLs require upload"))
+                .when(managedImageService).requireUnmanagedUrl(forged);
+
+        assertEquals(ErrorCode.BAD_REQUEST, assertThrows(ApiException.class, () -> service.updateCollection(
+                collection.getId(), new CollectionUpdateRequest(0L, null, null, forged, null)))
+                .getErrorCode());
+        verify(collectionRepository, never()).flush();
     }
 
     private static CollectionEntity collection(RecordStatus status) {

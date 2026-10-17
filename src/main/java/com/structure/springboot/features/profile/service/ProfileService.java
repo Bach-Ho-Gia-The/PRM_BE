@@ -3,6 +3,7 @@ package com.structure.springboot.features.profile.service;
 import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.profile.dto.request.ProfileUpdateRequest;
 import com.structure.springboot.features.profile.dto.response.ProfileResponse;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -22,6 +23,9 @@ public interface ProfileService {
 
     /** Cập nhật hồ sơ của chính mình theo kiểu PATCH. */
     ProfileResponse updateMyProfile(UUID accountId, ProfileUpdateRequest request);
+
+    /** Replace only the authenticated account's avatar; no client-supplied account/public ID. */
+    ProfileResponse uploadAvatar(UUID accountId, MultipartFile file);
 
     /**
      * Tạo hồ sơ rỗng đi kèm tài khoản vừa đăng ký.

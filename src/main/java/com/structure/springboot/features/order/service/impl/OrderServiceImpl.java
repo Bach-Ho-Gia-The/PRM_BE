@@ -103,9 +103,10 @@ public class OrderServiceImpl implements OrderService {
                 .map(OrderItemRequest::productId)
                 .collect(Collectors.toSet());
 
-        // Nạp sẵn theo lô. Trước đây mỗi dòng hàng bắn 2 câu SQL (một tra sản phẩm, một tra biến
-        // thể) nên giỏ 20 món là 40 câu. Giờ cố định 2 câu, bất kể giỏ to tới đâu.
-        Map<UUID, ProductEntity> products = productRepository.findAllById(productIds).stream()
+        // Khoá đọc Product đến khi đơn commit: admin thay ảnh phải chờ snapshot của đơn ghi xong
+        // trước khi quyết định có được xóa file cũ không. Khoá theo ID tăng dần để tránh deadlock.
+        // Vẫn nạp cả giỏ theo một query thay vì n+1 truy vấn.
+        Map<UUID, ProductEntity> products = productRepository.findByIdInOrderByIdAsc(productIds).stream()
                 .collect(Collectors.toMap(ProductEntity::getId, Function.identity()));
 
         // Khoá map là cặp (sản phẩm, size) vì đó mới là thứ định danh một dòng tồn kho.

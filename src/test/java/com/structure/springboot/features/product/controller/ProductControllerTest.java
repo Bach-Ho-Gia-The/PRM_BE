@@ -2,24 +2,29 @@ package com.structure.springboot.features.product.controller;
 
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.product.dto.request.ProductFilter;
+import com.structure.springboot.features.product.dto.response.ProductDetailResponse;
 import com.structure.springboot.features.product.dto.response.ProductResponse;
 import com.structure.springboot.features.product.service.ProductService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -31,7 +36,7 @@ class ProductControllerTest {
     private final HttpServletRequest request = mock(HttpServletRequest.class);
 
     @Test
-    void oneControllerHasFiveGuardedAdminRoutesAndThreePublicGets() {
+    void oneControllerHasTenGuardedAdminRoutesAndThreePublicGets() {
         assertEquals("/products", ProductController.class.getAnnotation(RequestMapping.class).value()[0]);
         assertNull(ProductController.class.getAnnotation(PreAuthorize.class));
         int admin = 0;
@@ -44,6 +49,8 @@ class ProductControllerTest {
                 path = String.join("", method.getAnnotation(PostMapping.class).value());
             } else if (method.isAnnotationPresent(PatchMapping.class)) {
                 path = String.join("", method.getAnnotation(PatchMapping.class).value());
+            } else if (method.isAnnotationPresent(PutMapping.class)) {
+                path = String.join("", method.getAnnotation(PutMapping.class).value());
             } else if (method.isAnnotationPresent(DeleteMapping.class)) {
                 path = String.join("", method.getAnnotation(DeleteMapping.class).value());
             }
@@ -66,8 +73,23 @@ class ProductControllerTest {
                 }
             }
         }
-        assertEquals(5, admin);
+        assertEquals(10, admin);
         assertEquals(3, publicGets);
+    }
+
+    @Test
+    void multipartGalleryUploadReturnsDetailAndUsesAdminOnlyService() {
+        UUID id = UUID.randomUUID();
+        var file = new MockMultipartFile("file", "new.png", "image/png", new byte[]{1});
+        var detail = mock(ProductDetailResponse.class);
+        when(service.addImage(id, file, true)).thenReturn(detail);
+        when(request.getRequestURI()).thenReturn("/products/admin/" + id + "/images");
+
+        var result = controller.addImage(id, file, true, request);
+
+        assertEquals(HttpStatus.CREATED, result.getStatusCode());
+        assertSame(detail, result.getBody().getResult());
+        verify(service).addImage(id, file, true);
     }
 
     @Test

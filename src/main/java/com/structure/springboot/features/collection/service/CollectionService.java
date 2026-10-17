@@ -10,6 +10,7 @@ import com.structure.springboot.features.collection.dto.response.CollectionPubli
 import com.structure.springboot.features.collection.dto.response.CollectionPublicSummaryResponse;
 import com.structure.springboot.features.collection.dto.response.CollectionSummaryResponse;
 import org.springframework.data.domain.Pageable;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -18,6 +19,7 @@ public interface CollectionService {
 
     CollectionDetailResponse createCollection(CollectionCreateRequest request);
     CollectionDetailResponse updateCollection(UUID id, CollectionUpdateRequest request);
+    CollectionDetailResponse uploadCover(UUID id, CollectionVersionRequest request, MultipartFile file);
     CollectionDetailResponse replaceProducts(UUID id, CollectionProductsRequest request);
     CollectionDetailResponse publishCollection(UUID id, CollectionVersionRequest request);
     CollectionDetailResponse hideCollection(UUID id, CollectionVersionRequest request);

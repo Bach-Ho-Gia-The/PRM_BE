@@ -19,6 +19,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -27,10 +28,12 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -72,6 +75,22 @@ public class CollectionController {
                         .path(request.getRequestURI())
                         .build()
         );
+    }
+
+    /** Multipart parts: metadata (application/json: expectedVersion) and file (image). */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PutMapping(value = "/admin/{id}/cover", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<CollectionDetailResponse>> uploadCover(
+            @PathVariable UUID id,
+            @Valid @RequestPart("metadata") CollectionVersionRequest metadata,
+            @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(ApiResponse.<CollectionDetailResponse>builder()
+                .code(HttpStatus.OK.value())
+                .message("Collection cover uploaded successfully")
+                .result(collectionService.uploadCover(id, metadata, file))
+                .path(request.getRequestURI())
+                .build());
     }
 
     /** Thay toàn bộ danh sách theo thứ tự; không lưu từng thao tác kéo thả rời rạc. */

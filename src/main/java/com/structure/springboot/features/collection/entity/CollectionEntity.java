@@ -34,9 +34,13 @@ public class CollectionEntity extends SoftDeletableEntity {
     @Column(name = "slug", nullable = false, unique = true, length = 100)
     private String slug;
 
-    /** URL ảnh bìa có thể để trống; upload file sẽ là luồng riêng trả về URL. */
+    /** URL ảnh bìa có thể để trống; upload file là luồng riêng của admin. */
     @Column(name = "cover_image_url", length = 500)
     private String coverImageUrl;
+
+    /** Null for external/seed images; never included in the response. */
+    @Column(name = "cover_image_public_id", length = 500)
+    private String coverImagePublicId;
 
     /** Chặn màn hình quản trị cũ ghi đè thay đổi mới, kể cả khi chỉ sửa sản phẩm liên kết. */
     @Version

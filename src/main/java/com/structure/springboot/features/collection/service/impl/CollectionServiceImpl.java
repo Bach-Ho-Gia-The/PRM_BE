@@ -22,6 +22,8 @@ import com.structure.springboot.features.collection.service.CollectionService;
 import com.structure.springboot.features.collection.specification.CollectionSpecifications;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.repository.ProductRepository;
+import com.structure.springboot.infrastructure.external.cloudinary.ImageUploadResult;
+import com.structure.springboot.infrastructure.external.cloudinary.ManagedImageService;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import com.structure.springboot.infrastructure.persistence.StatusSpecifications;
 import jakarta.persistence.EntityManager;
@@ -32,6 +34,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -59,6 +62,7 @@ public class CollectionServiceImpl implements CollectionService {
     private final ProductRepository productRepository;
     private final CollectionMapper collectionMapper;
     private final EntityManager entityManager;
+    private final ManagedImageService managedImageService;
 
     @Override
     @Transactional
@@ -71,6 +75,7 @@ public class CollectionServiceImpl implements CollectionService {
         collection.setCollectionName(name);
         collection.setSlug(resolveSlug(request.slug(), name, null));
         collection.setCoverImageUrl(normalizeCoverUrl(request.coverImageUrl()));
+        managedImageService.requireUnmanagedUrl(collection.getCoverImageUrl());
         // SoftDeletableEntity mặc định ACTIVE; BST phải được chuẩn bị rồi mới đăng.
         collection.setStatus(RecordStatus.HIDDEN);
         collectionRepository.saveAndFlush(collection);
@@ -94,6 +99,15 @@ public class CollectionServiceImpl implements CollectionService {
         if (Boolean.TRUE.equals(request.clearCoverImage()) && request.coverImageUrl() != null) {
             throw new ApiException(ErrorCode.BAD_REQUEST, "Cannot set and clear collection cover in one request");
         }
+        String requestedCover = request.coverImageUrl() == null
+                ? null : normalizeCoverUrl(request.coverImageUrl());
+        if (requestedCover != null && !requestedCover.equals(collection.getCoverImageUrl())) {
+            managedImageService.requireUnmanagedUrl(requestedCover);
+        }
+        boolean coverChanged = (Boolean.TRUE.equals(request.clearCoverImage())
+                && (collection.getCoverImageUrl() != null || collection.getCoverImagePublicId() != null))
+                || (requestedCover != null && !requestedCover.equals(collection.getCoverImageUrl()));
+        String oldPublicId = collection.getCoverImagePublicId();
 
         if (request.collectionName() != null) {
             collection.setCollectionName(normalizeName(request.collectionName()));
@@ -102,13 +116,28 @@ public class CollectionServiceImpl implements CollectionService {
         if (request.slug() != null) {
             collection.setSlug(resolveSlug(request.slug(), collection.getCollectionName(), id));
         }
-        if (Boolean.TRUE.equals(request.clearCoverImage())) {
-            collection.setCoverImageUrl(null);
-        } else if (request.coverImageUrl() != null) {
-            collection.setCoverImageUrl(normalizeCoverUrl(request.coverImageUrl()));
+        if (coverChanged) {
+            collection.setCoverImageUrl(Boolean.TRUE.equals(request.clearCoverImage()) ? null : requestedCover);
+            collection.setCoverImagePublicId(null);
         }
 
-        collectionRepository.flush(); // @Version/@UpdateTimestamp phải sẵn sàng trước khi trả response.
+        collectionRepository.flush(); // Check DB constraints and @Version before deleting an old asset.
+        if (coverChanged) {
+            managedImageService.deleteOrFail(oldPublicId, "collection", id);
+        }
+        return toDetailResponse(collection);
+    }
+
+    @Override
+    @Transactional
+    public CollectionDetailResponse uploadCover(UUID id, CollectionVersionRequest request, MultipartFile file) {
+        CollectionEntity collection = requireHidden(id, request.expectedVersion());
+        String oldPublicId = collection.getCoverImagePublicId();
+        ImageUploadResult uploaded = managedImageService.upload(file, "collections");
+        collection.setCoverImageUrl(uploaded.url());
+        collection.setCoverImagePublicId(uploaded.publicId());
+        collectionRepository.flush(); // Uncommitted until Cloudinary confirms deletion of the old cover.
+        managedImageService.deleteOrFail(oldPublicId, "collection", id);
         return toDetailResponse(collection);
     }
 

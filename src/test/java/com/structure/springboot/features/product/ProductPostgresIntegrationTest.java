@@ -171,7 +171,7 @@ class ProductPostgresIntegrationTest {
         CategoryEntity active = category(suffix, "new", RecordStatus.ACTIVE);
         ProductEntity product = product(original, suffix, "entry", RecordStatus.ACTIVE, "130.00");
         ProductRequest createInHidden = new ProductRequest("Test", null, "QA-" + suffix, new BigDecimal("100"),
-                null, null, null, null, null, null, false, false, hidden.getId());
+                null, null, null, null, null, null, false, false, hidden.getId(), null);
         assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class,
                 () -> productService.createProduct(createInHidden)).getErrorCode());
         assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class,

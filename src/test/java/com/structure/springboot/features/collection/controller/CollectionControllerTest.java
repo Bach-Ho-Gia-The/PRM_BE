@@ -16,13 +16,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
@@ -80,8 +84,30 @@ class CollectionControllerTest {
                 }
             }
         }
-        assertEquals(8, adminEndpoints);
+        assertEquals(9, adminEndpoints);
         assertEquals(2, publicEndpoints);
+    }
+
+    @Test
+    void coverUploadReceivesJsonVersionPartAndMultipartFile() throws NoSuchMethodException {
+        Method action = CollectionController.class.getMethod("uploadCover", UUID.class,
+                CollectionVersionRequest.class, MultipartFile.class, HttpServletRequest.class);
+        assertEquals("/admin/{id}/cover", action.getAnnotation(PutMapping.class).value()[0]);
+        assertEquals(MediaType.MULTIPART_FORM_DATA_VALUE, action.getAnnotation(PutMapping.class).consumes()[0]);
+        assertEquals("metadata", action.getParameters()[1].getAnnotation(RequestPart.class).value());
+        assertEquals("file", action.getParameters()[2].getAnnotation(RequestPart.class).value());
+        assertEquals("hasRole('ADMIN')", action.getAnnotation(PreAuthorize.class).value());
+
+        UUID id = UUID.randomUUID();
+        var body = new CollectionVersionRequest(3L);
+        var file = new MockMultipartFile("file", "cover.png", "image/png", new byte[]{1});
+        var updated = new CollectionDetailResponse(id, "Summer", "summer", "https://cdn/new.png",
+                RecordStatus.HIDDEN, 4L, List.of(), 0, null, null);
+        when(service.uploadCover(id, body, file)).thenReturn(updated);
+        when(httpRequest.getRequestURI()).thenReturn("/collections/admin/" + id + "/cover");
+        var response = controller.uploadCover(id, body, file, httpRequest);
+        assertEquals(updated, response.getBody().getResult());
+        verify(service).uploadCover(id, body, file);
     }
 
     @Test
