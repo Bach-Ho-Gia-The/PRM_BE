@@ -1,6 +1,7 @@
 package com.structure.springboot.features.order.service;
 
 import com.structure.springboot.common.response.PageResponse;
+import com.structure.springboot.features.order.dto.request.OrderCancelRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
 import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
 import com.structure.springboot.features.order.enums.OrderStatus;
@@ -45,7 +46,24 @@ public interface OrderService {
     OrderResponse getOrderById(UUID id);
 
     /**
+     * Màn quản trị: tra một đơn bất kỳ theo mã khách đọc được.
+     *
+     * <p>Khách gọi điện thì đọc {@code LBVN-2610-A7K2} chứ không đọc UUID. Thiếu đường này thì
+     * admin phải lật từng trang danh sách để tìm.</p>
+     */
+    OrderResponse getOrderByNumber(String orderNumber);
+
+    /**
      * Admin chuyển trạng thái đơn. Huỷ đơn sẽ hoàn kho.
      */
     OrderResponse updateStatus(UUID id, OrderStatusUpdateRequest request);
+
+    /**
+     * Khách tự huỷ đơn của chính mình.
+     *
+     * <p>Chỉ huỷ được khi đơn còn {@code PENDING}: từ {@code CONFIRMED} trở đi shop đã gói hàng,
+     * muốn huỷ thì nhắn shop. Tra theo {@code orderNumber} + tài khoản nên không ai huỷ được đơn
+     * của người khác; không tìm thấy thì trả 404 chứ không 403 để khỏi lộ mã đơn có tồn tại.</p>
+     */
+    OrderResponse cancelMyOrder(UUID accountId, String orderNumber, OrderCancelRequest request);
 }

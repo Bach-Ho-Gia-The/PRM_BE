@@ -26,6 +26,8 @@ public record OrderResponse(
         String email,
         String address,
         String note,
+        /** Chỉ có giá trị khi khách tự huỷ; đơn do admin huỷ thì null. */
+        String cancelReason,
         BigDecimal subtotal,
         BigDecimal shippingFee,
         BigDecimal discount,

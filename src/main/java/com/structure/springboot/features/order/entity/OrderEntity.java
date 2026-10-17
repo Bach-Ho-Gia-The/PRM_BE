@@ -72,6 +72,10 @@ public class OrderEntity extends BaseEntity {
     @Column(name = "note", length = 500)
     private String note;
 
+    /** Lý do khách tự huỷ. Null với đơn do admin huỷ hoặc đơn chưa huỷ. */
+    @Column(name = "cancel_reason", length = 300)
+    private String cancelReason;
+
     @Column(name = "subtotal", nullable = false, precision = 12, scale = 2)
     private BigDecimal subtotal;
 

@@ -7,11 +7,14 @@ import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.features.order.config.OrderProperties;
 import com.structure.springboot.features.order.dto.request.OrderItemRequest;
+import com.structure.springboot.features.order.dto.request.OrderCancelRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
 import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
 import com.structure.springboot.features.order.dto.response.OrderResponse;
 import com.structure.springboot.features.order.dto.response.OrderSummaryResponse;
+import com.structure.springboot.features.notification.service.NotificationService;
 import com.structure.springboot.features.order.entity.OrderEntity;
+import com.structure.springboot.infrastructure.external.brevo.BrevoMailClient;
 import com.structure.springboot.features.order.entity.OrderItemEntity;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
@@ -24,12 +27,14 @@ import com.structure.springboot.features.product.entity.ProductVariantEntity;
 import com.structure.springboot.features.product.enums.ProductSize;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
-import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
@@ -79,6 +84,8 @@ public class OrderServiceImpl implements OrderService {
     private final ProductRepository productRepository;
     private final ProductVariantRepository productVariantRepository;
     private final OrderMapper orderMapper;
+    private final NotificationService notificationService;
+    private final BrevoMailClient brevoMailClient;
     private final OrderProperties orderProperties;
 
     @Override
@@ -121,6 +128,13 @@ public class OrderServiceImpl implements OrderService {
         int totalItems = 0;
 
         for (OrderItemRequest line : lines) {
+            // Kiểm LẠI trần sau khi gộp: @Max(999) trên OrderItemRequest chạy trên từng phần tử
+            // client gửi lên, nên gửi cùng một (sản phẩm, size) làm 3 dòng 999 là lách được thành
+            // 2.997. Giá trị phải khớp @Max của OrderItemRequest.quantity.
+            if (line.quantity() > 999) {
+                throw new ApiException(ErrorCode.BAD_REQUEST,
+                        "Quantity must not exceed 999 per product and size");
+            }
             OrderItemEntity item = buildItem(line, order, products, variants);
             order.getItems().add(item);
 
@@ -138,7 +152,13 @@ public class OrderServiceImpl implements OrderService {
         order.setTotal(subtotal.add(shippingFee));
         order.setTotalItems(totalItems);
 
-        return orderMapper.toResponse(orderRepository.save(order));
+        OrderEntity saved = orderRepository.save(order);
+
+        sendConfirmationAfterCommit(
+                StringUtils.hasText(saved.getEmail()) ? saved.getEmail() : account.getEmail(),
+                saved.getOrderNumber(), saved.getReceiverName(), saved.getTotal(), saved.getAddress());
+
+        return orderMapper.toResponse(saved);
     }
 
     @Override
@@ -188,6 +208,14 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional(readOnly = true)
+    public OrderResponse getOrderByNumber(String orderNumber) {
+        return orderMapper.toResponse(orderRepository.findWithItemsByOrderNumber(orderNumber)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public OrderResponse getOrderById(UUID id) {
         return orderMapper.toResponse(orderRepository.findWithItemsById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id)));
@@ -217,8 +245,38 @@ public class OrderServiceImpl implements OrderService {
             restoreStock(order);
         }
         order.setStatus(next);
+        OrderResponse response = orderMapper.toResponse(orderRepository.save(order));
 
-        return orderMapper.toResponse(orderRepository.save(order));
+        // Sau khi đã ghi trạng thái: thông báo hỏng không được kéo đổ việc đổi trạng thái,
+        // service bên kia tự nuốt lỗi và chỉ ghi log.
+        notificationService.notifyOrderStatusChanged(order);
+        return response;
+    }
+
+    @Override
+    @Transactional
+    public OrderResponse cancelMyOrder(UUID accountId, String orderNumber,
+                                       OrderCancelRequest request) {
+        OrderEntity order = orderRepository.findByOrderNumberAndAccountId(orderNumber, accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            throw new ApiException(ErrorCode.CONFLICT, "Order is already cancelled");
+        }
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "Order is already confirmed; contact the shop to cancel");
+        }
+
+        // Dùng lại đúng đường hoàn kho của admin: hai bản hoàn kho khác nhau là mầm lệch số liệu.
+        restoreStock(order);
+        order.setStatus(OrderStatus.CANCELLED);
+        order.setCancelReason(request == null ? null : request.reason());
+        OrderResponse response = orderMapper.toResponse(orderRepository.save(order));
+
+        notificationService.notifyOrderStatusChanged(order);
+        return response;
     }
 
     /**
@@ -257,6 +315,37 @@ public class OrderServiceImpl implements OrderService {
      * Khoá định danh một dòng tồn kho: một sản phẩm có nhiều size, phải đủ cả cặp mới trỏ đúng
      * một bản ghi. Dùng chung cho cả việc gộp dòng trùng trong giỏ lẫn việc tra biến thể đã nạp.
      */
+    /**
+     * Hẹn gửi mail xác nhận SAU KHI giao dịch commit thành công.
+     *
+     * <p><b>Vì sao không gọi thẳng:</b> {@code product_variants} có {@code @Version}, nên hai
+     * khách cùng mua món cuối cùng sẽ làm một giao dịch ném {@code OptimisticLockException}
+     * <b>đúng lúc commit</b> — sau khi thân hàm này đã chạy xong. Gọi thẳng thì đơn bị huỷ bỏ mà
+     * khách vẫn nhận được mail xác nhận cho một đơn không tồn tại.</p>
+     *
+     * <p><b>Vì sao đăng ký ở đây chứ không trong {@code BrevoMailClient}:</b> {@code @Async} đi
+     * qua proxy, mà gọi từ chính bên trong bean đó thì proxy bị bỏ qua và mail sẽ chạy đồng bộ,
+     * chặn luôn response. Gọi từ bean này sang bean kia thì {@code @Async} mới có tác dụng.</p>
+     *
+     * <p>Nhận giá trị rời chứ không nhận {@code OrderEntity}: lúc callback chạy thì phiên
+     * Hibernate đã đóng, chạm vào quan hệ lazy là {@code LazyInitializationException}.</p>
+     */
+    private void sendConfirmationAfterCommit(String toEmail, String orderNumber,
+                                             String receiverName, BigDecimal total, String address) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            // Không nằm trong giao dịch nào (chỉ xảy ra ở unit test): gửi luôn.
+            brevoMailClient.sendOrderConfirmationEmail(toEmail, orderNumber, receiverName, total, address);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                brevoMailClient.sendOrderConfirmationEmail(
+                        toEmail, orderNumber, receiverName, total, address);
+            }
+        });
+    }
+
     private String variantKey(UUID productId, ProductSize size) {
         return productId + "_" + size;
     }
@@ -273,7 +362,7 @@ public class OrderServiceImpl implements OrderService {
                                       Map<UUID, ProductEntity> products,
                                       Map<String, ProductVariantEntity> variants) {
         ProductEntity product = Optional.ofNullable(products.get(request.productId()))
-                .filter(p -> p.getStatus() == null || p.getStatus() == RecordStatus.ACTIVE)
+                .filter(ProductEntity::isVisible)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Product not available: " + request.productId()));
 

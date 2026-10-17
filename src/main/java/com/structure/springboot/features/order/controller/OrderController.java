@@ -3,6 +3,7 @@ package com.structure.springboot.features.order.controller;
 import com.structure.springboot.common.response.ApiResponse;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.security.AuthenticatedUser;
+import com.structure.springboot.features.order.dto.request.OrderCancelRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
 import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
 import com.structure.springboot.features.order.enums.OrderStatus;
@@ -120,6 +121,25 @@ public class OrderController {
         );
     }
 
+    /** Khách tự huỷ đơn còn PENDING của chính mình; kho được hoàn lại ngay. */
+    @PostMapping("/me/{orderNumber}/cancel")
+    public ResponseEntity<ApiResponse<OrderResponse>> cancelMyOrder(
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            @PathVariable String orderNumber,
+            @Valid @RequestBody(required = false) OrderCancelRequest body,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<OrderResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Order cancelled successfully")
+                        .result(orderService.cancelMyOrder(
+                                AuthenticatedUser.requireId(currentUser), orderNumber, body))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
     /** Màn quản trị: chi tiết một đơn bất kỳ. Khách tự xem đơn mình thì dùng {@code /orders/me/{orderNumber}}. */
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{id}")
@@ -138,6 +158,22 @@ public class OrderController {
     }
 
     /** Admin chuyển trạng thái đơn. Chuyển sang CANCELLED thì hàng được trả về kho. */
+    /** Màn quản trị: tra đơn theo mã khách đọc qua điện thoại. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/number/{orderNumber}")
+    public ResponseEntity<ApiResponse<OrderResponse>> getOrderByNumber(
+            @PathVariable String orderNumber, HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<OrderResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Order retrieved successfully")
+                        .result(orderService.getOrderByNumber(orderNumber))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
     @PreAuthorize("hasRole('ADMIN')")
     @PatchMapping("/{id}/status")
     public ResponseEntity<ApiResponse<OrderResponse>> updateOrderStatus(

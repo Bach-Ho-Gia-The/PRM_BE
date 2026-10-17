@@ -42,6 +42,9 @@ public record OrderRequest(
         // ràng buộc trên OrderItemRequest hoàn toàn không chạy.
         @Valid
         @NotEmpty(message = "Order must contain at least one item")
+        // Chặn giỏ phình vô hạn: mỗi dòng là một cặp (sản phẩm, size), 50 dòng đã quá thừa cho
+        // một đơn quần áo. Không có trần thì client gửi 10.000 dòng là một câu IN(...) khổng lồ.
+        @Size(max = 50, message = "Order must not contain more than 50 different items")
         List<OrderItemRequest> items
 ) {
 }

@@ -8,6 +8,8 @@ import java.util.UUID;
 public record ProductVariantResponse(
         UUID id,
         ProductSize size,
-        Integer stockQuantity
+        Integer stockQuantity,
+        /** Gửi lại ở {@code expectedVersion} khi sửa tồn kho. */
+        Long version
 ) {
 }

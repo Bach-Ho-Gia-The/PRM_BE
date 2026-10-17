@@ -6,6 +6,8 @@ import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.features.category.entity.CategoryEntity;
 import com.structure.springboot.features.category.repository.CategoryRepository;
+import com.structure.springboot.features.store.entity.StoreEntity;
+import com.structure.springboot.features.store.repository.StoreRepository;
 import com.structure.springboot.features.collection.dto.request.CollectionCreateRequest;
 import com.structure.springboot.features.collection.dto.request.CollectionVersionRequest;
 import com.structure.springboot.features.collection.repository.CollectionRepository;
@@ -48,6 +50,7 @@ public class DataInitializer implements CommandLineRunner {
     private final RoleRepository roleRepository;
     private final AccountRepository accountRepository;
     private final CategoryRepository categoryRepository;
+    private final StoreRepository storeRepository;
     private final ProductRepository productRepository;
     private final CollectionRepository collectionRepository;
     private final CollectionService collectionService;
@@ -80,6 +83,39 @@ public class DataInitializer implements CommandLineRunner {
         ensureCategory("Quần & Chân Váy", "quan");
         ensureCatalog();
         ensureSeedCollections();
+        ensureStores();
+    }
+
+    /**
+     * Bốn chi nhánh mẫu cho màn bản đồ.
+     *
+     * <p>Toạ độ là số thật ở TP.HCM để ghim hiện đúng vị trí khi demo. Tra theo tên nên chạy lại
+     * nhiều lần không sinh bản ghi trùng.</p>
+     */
+    private void ensureStores() {
+        ensureStore("Chi nhánh Quận 1", "72 Lê Thánh Tôn, Bến Nghé, Quận 1",
+                "0901234501", "08:00 - 22:00", 10.77689, 106.70098);
+        ensureStore("Chi nhánh Quận 3", "189 Võ Văn Tần, Phường 5, Quận 3",
+                "0901234502", "08:30 - 21:30", 10.77459, 106.68741);
+        ensureStore("Chi nhánh Thủ Đức", "216 Võ Văn Ngân, Bình Thọ, Thủ Đức",
+                "0901234503", "09:00 - 22:00", 10.85072, 106.75700);
+        ensureStore("Chi nhánh Tân Bình", "202 Hoàng Văn Thụ, Phường 9, Tân Bình",
+                "0901234504", "08:00 - 21:00", 10.79838, 106.66305);
+    }
+
+    private void ensureStore(String storeName, String address, String phone,
+                             String openingHours, double latitude, double longitude) {
+        if (storeRepository.existsByStoreNameIgnoreCase(storeName)) {
+            return;
+        }
+        storeRepository.save(StoreEntity.builder()
+                .storeName(storeName)
+                .address(address)
+                .phone(phone)
+                .openingHours(openingHours)
+                .latitude(latitude)
+                .longitude(longitude)
+                .build());
     }
 
     /** Danh mục tra theo slug vì slug mới là thứ frontend dùng để lọc, tên hiển thị có thể đổi. */

@@ -7,6 +7,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -21,6 +23,9 @@ public interface ProfileRepository extends JpaRepository<ProfileEntity, UUID> {
      */
     @EntityGraph(attributePaths = {"account"})
     Optional<ProfileEntity> findByAccountId(UUID accountId);
+
+    /** Nạp hồ sơ của nhiều tài khoản một lượt — dùng cho màn danh sách hội thoại của admin. */
+    List<ProfileEntity> findByAccountIdIn(Collection<UUID> accountIds);
 
     /** Serialize avatar uploads and legacy PATCH updates for this profile. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)

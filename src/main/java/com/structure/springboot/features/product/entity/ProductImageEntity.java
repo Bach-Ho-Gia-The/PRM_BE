@@ -10,7 +10,11 @@ import lombok.experimental.SuperBuilder;
 
 /** Một ảnh gallery: URL được trả cho frontend, public ID chỉ dùng nội bộ để dọn file do backend upload. */
 @Entity
-@Table(name = "product_images")
+@Table(
+        name = "product_images",
+        // Nạp gallery của một sản phẩm là lọc theo product_id rồi sắp theo sort_order.
+        indexes = @Index(name = "idx_product_images_product_id", columnList = "product_id, sort_order")
+)
 @Getter
 @Setter
 @SuperBuilder

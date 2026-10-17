@@ -12,6 +12,13 @@ spring:
   config:
     import: optional:file:.env[.properties]
 
+# ----------------------------------------------------
+# TẮC TỰ ĐỘNG BẬT DOCKER COMPOSE KHI RUN TRÊN INTELLIJ
+# ----------------------------------------------------
+  docker:
+    compose:
+      enabled: ${SPRING_DOCKER_COMPOSE_ENABLED:false}
+
   # ==========================================
   # CƠ SỞ DỮ LIỆU CHÍNH (POSTGRESQL)
   # ==========================================
@@ -21,7 +28,13 @@ spring:
     password: ${DB_PASSWORD:123456}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: ${DB_POOL_SIZE:5}
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      # Cặp auto-commit=false + provider_disables_autocommit=true bên dưới là BẮT BUỘC đi chung.
+      # Mặc định Hibernate mượn connection NGAY khi mở @Transactional chỉ để tắt autocommit; khi
+      # trong transaction có lời gọi mạng (upload ảnh Cloudinary) thì connection bị giam suốt
+      # thời gian chờ mạng. Báo trước cho Hibernate biết pool đã tắt autocommit thì nó hoãn việc
+      # mượn tới câu SQL đầu tiên.
+      auto-commit: false
 
   jpa:
     hibernate:
@@ -38,11 +51,25 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: ${APP_TIMEZONE:Asia/Ho_Chi_Minh}
+        connection:
+          # Đi kèm spring.datasource.hikari.auto-commit=false ở trên. Thiếu một trong hai là mất
+          # tác dụng; bật riêng cái này mà pool vẫn autocommit=true thì dữ liệu ghi sai transaction.
+          provider_disables_autocommit: true
 
   # ==========================================
-  # CACHE & SESSION (REDIS)
+  # PHÂN TRANG
   # ==========================================
   data:
+    web:
+      pageable:
+        # @PageableDefault ở controller chỉ đặt cỡ trang MẶC ĐỊNH, không chặn trần. Không khai
+        # dòng này thì Spring cho tới 2000 bản ghi một lượt: ?size=2000 kéo sập cả bộ nhớ lẫn DB.
+        max-page-size: 100
+        default-page-size: 20
+
+    # ==========================================
+    # CACHE & SESSION (REDIS)
+    # ==========================================
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
@@ -103,7 +130,7 @@ app:
       max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
       lock-duration: ${LOGIN_LOCK_DURATION:15m}
     # Category/Product public có tiền tố /id và /slug; /categories/admin và /products/admin không được mở.
-    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**"
+    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**,/stores,/stores/id/**"
   # ==========================================
   # QUY TẮC ĐẶT HÀNG
   # ==========================================
@@ -149,7 +176,9 @@ cloudinary:
   folder-prefix: ${CLOUDINARY_FOLDER_PREFIX:prm/dev}
   max-file-size: ${CLOUDINARY_MAX_FILE_SIZE:5MB}
   allowed-formats: ${CLOUDINARY_ALLOWED_FORMATS:jpg,png,webp}
-  timeout: ${CLOUDINARY_TIMEOUT:30s}
+  # 10s thay vì 30s: đây là trần thời gian một request upload có thể treo. Càng dài thì khi
+  # Cloudinary chậm, càng nhiều request nằm chờ và càng dễ cạn connection pool.
+  timeout: ${CLOUDINARY_TIMEOUT:10s}
 
   quota:
     enabled: ${CLOUDINARY_QUOTA_ENABLED:true}

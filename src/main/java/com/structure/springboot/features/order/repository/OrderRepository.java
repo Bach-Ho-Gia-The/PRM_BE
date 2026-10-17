@@ -24,6 +24,10 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
     @EntityGraph(attributePaths = {"items"})
     Optional<OrderEntity> findWithItemsById(UUID id);
 
+    /** Bản tra theo mã đơn cho màn quản trị; cùng @EntityGraph nên cũng không N+1. */
+    @EntityGraph(attributePaths = {"items"})
+    Optional<OrderEntity> findWithItemsByOrderNumber(String orderNumber);
+
     boolean existsByOrderNumber(String orderNumber);
 
     /**

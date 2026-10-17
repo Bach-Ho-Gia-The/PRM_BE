@@ -9,7 +9,6 @@ import com.structure.springboot.features.profile.entity.ProfileEntity;
 import com.structure.springboot.features.profile.mapper.ProfileMapper;
 import com.structure.springboot.features.profile.repository.ProfileRepository;
 import com.structure.springboot.features.profile.service.impl.ProfileServiceImpl;
-import com.structure.springboot.infrastructure.external.cloudinary.CloudinaryService;
 import com.structure.springboot.infrastructure.external.cloudinary.ImageUploadResult;
 import com.structure.springboot.infrastructure.external.cloudinary.ManagedImageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,14 +38,13 @@ class ProfileImageServiceTest {
     @Mock private ProfileRepository profiles;
     @Mock private AccountRepository accounts;
     @Mock private ManagedImageService images;
-    @Mock private CloudinaryService cloudinary;
     private ProfileServiceImpl service;
     private final MockMultipartFile file = new MockMultipartFile("file", "avatar.png", "image/png", new byte[]{1});
 
     @BeforeEach
     void setUp() {
         ProfileMapper mapper = Mappers.getMapper(ProfileMapper.class);
-        service = new ProfileServiceImpl(profiles, accounts, mapper, images, cloudinary);
+        service = new ProfileServiceImpl(profiles, accounts, mapper, images);
     }
 
     @Test
@@ -141,7 +139,7 @@ class ProfileImageServiceTest {
         service.deleteByAccountId(owner);
 
         verify(profiles).delete(profile);
-        verify(cloudinary).deleteAfterCommit("prm/dev/profiles/old");
+        verify(images).deleteAfterCommit("prm/dev/profiles/old");
     }
 
     private static ProfileEntity profile() {

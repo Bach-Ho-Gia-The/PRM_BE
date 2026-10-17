@@ -1,0 +1,173 @@
+package com.structure.springboot.features.order.service;
+
+import com.structure.springboot.common.exception.ApiException;
+import com.structure.springboot.common.exception.ErrorCode;
+import com.structure.springboot.features.account.entity.AccountEntity;
+import com.structure.springboot.features.account.repository.AccountRepository;
+import com.structure.springboot.features.notification.service.NotificationService;
+import com.structure.springboot.features.order.config.OrderProperties;
+import com.structure.springboot.features.order.dto.request.OrderItemRequest;
+import com.structure.springboot.features.order.dto.request.OrderRequest;
+import com.structure.springboot.features.order.entity.OrderEntity;
+import com.structure.springboot.features.order.enums.OrderStatus;
+import com.structure.springboot.features.order.enums.PaymentMethod;
+import com.structure.springboot.features.order.mapper.OrderMapper;
+import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
+import com.structure.springboot.features.product.entity.ProductEntity;
+import com.structure.springboot.features.product.entity.ProductVariantEntity;
+import com.structure.springboot.features.product.enums.ProductSize;
+import com.structure.springboot.features.product.repository.ProductRepository;
+import com.structure.springboot.features.product.repository.ProductVariantRepository;
+import com.structure.springboot.infrastructure.external.brevo.BrevoMailClient;
+import com.structure.springboot.infrastructure.persistence.RecordStatus;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mapstruct.factory.Mappers;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Luật nghiệp vụ của đơn hàng không nằm trong annotation validation.
+ *
+ * <p>Nhãn test để ASCII thuần vì output surefire mã hoá hỏng tiếng Việt có dấu.</p>
+ */
+@ExtendWith(MockitoExtension.class)
+class OrderBusinessRuleTest {
+
+    @Mock private OrderRepository orders;
+    @Mock private AccountRepository accounts;
+    @Mock private ProductRepository products;
+    @Mock private ProductVariantRepository variants;
+    @Mock private NotificationService notifications;
+    @Mock private BrevoMailClient mail;
+    private OrderServiceImpl service;
+
+    private AccountEntity account;
+    private ProductEntity product;
+
+    @BeforeEach
+    void setUp() {
+        OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
+        service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
+                notifications, mail, new OrderProperties(null, null));
+
+        account = new AccountEntity();
+        account.setId(UUID.randomUUID());
+        account.setEmail("khach@example.com");
+
+        product = ProductEntity.builder()
+                .name("Vay hoa").slug("vay-hoa").sku("SKU-1")
+                .price(new BigDecimal("100000")).status(RecordStatus.ACTIVE).build();
+        product.setId(UUID.randomUUID());
+        product.setVariants(new ArrayList<>());
+    }
+
+    private void stubCatalog(int stock) {
+        ProductVariantEntity variant = ProductVariantEntity.builder()
+                .product(product).size(ProductSize.M).stockQuantity(stock).build();
+        variant.setId(UUID.randomUUID());
+        when(accounts.findById(account.getId())).thenReturn(Optional.of(account));
+        when(products.findByIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(product));
+        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of(variant));
+        lenient().when(orders.existsByOrderNumber(any())).thenReturn(false);
+        lenient().when(orders.save(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
+    }
+
+    private OrderRequest withLines(OrderItemRequest... lines) {
+        return new OrderRequest("Nguyen Van A", "0901234567", "a@b.com",
+                "12 Nguyen Hue, Q1", null, PaymentMethod.COD, List.of(lines));
+    }
+
+    private OrderItemRequest line(int quantity) {
+        return new OrderItemRequest(product.getId(), ProductSize.M, quantity);
+    }
+
+    // ───────────── tran so luong khong bi lach qua viec gop dong ─────────────
+
+    /**
+     * @Max(999) tren OrderItemRequest chay tren TUNG phan tu client gui len. Gui cung mot
+     * (san pham, size) lam 3 dong 999 thi sau khi gop thanh 2.997 — phai chan lai.
+     */
+    @Test
+    void repeatingTheSameLineCannotSneakPastThePerLineCap() {
+        stubCatalog(10_000);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createOrder(account.getId(),
+                        withLines(line(999), line(999), line(999))));
+
+        assertEquals(ErrorCode.BAD_REQUEST, exception.getErrorCode());
+        verify(orders, never()).save(any());
+    }
+
+    @Test
+    void exactlyTheCapAfterMergingIsStillAccepted() {
+        stubCatalog(10_000);
+
+        var result = service.createOrder(account.getId(), withLines(line(500), line(499)));
+
+        assertEquals(1, result.items().size());
+        assertEquals(999, result.items().get(0).quantity());
+    }
+
+    @Test
+    void duplicateLinesAreMergedIntoOneOrderItem() {
+        stubCatalog(100);
+
+        var result = service.createOrder(account.getId(), withLines(line(2), line(3)));
+
+        assertEquals(1, result.items().size());
+        assertEquals(5, result.items().get(0).quantity());
+        // 5 x 100.000 = 500.000 chua dat nguong freeship 1.000.000 -> cong 30.000
+        assertEquals(new BigDecimal("530000"), result.total());
+    }
+
+    @Test
+    void stockIsCheckedAgainstTheMergedQuantityNotEachLine() {
+        stubCatalog(4); // 3 + 3 = 6 > 4
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createOrder(account.getId(), withLines(line(3), line(3))));
+
+        assertEquals(ErrorCode.CONFLICT, exception.getErrorCode());
+    }
+
+    // ───────────── admin tra don theo ma don ─────────────
+
+    @Test
+    void adminCanLookUpAnOrderByTheNumberTheCustomerReadsOnThePhone() {
+        OrderEntity entity = OrderEntity.builder()
+                .orderNumber("LBVN-2610-A7K2").account(account).status(OrderStatus.CONFIRMED)
+                .subtotal(BigDecimal.TEN).total(BigDecimal.TEN).build();
+        entity.setId(UUID.randomUUID());
+        entity.setItems(new ArrayList<>());
+        when(orders.findWithItemsByOrderNumber("LBVN-2610-A7K2")).thenReturn(Optional.of(entity));
+
+        assertEquals("LBVN-2610-A7K2", service.getOrderByNumber("LBVN-2610-A7K2").orderNumber());
+    }
+
+    @Test
+    void anUnknownOrderNumberIsNotFound() {
+        when(orders.findWithItemsByOrderNumber("LBVN-9999-ZZZZ")).thenReturn(Optional.empty());
+
+        assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
+                () -> service.getOrderByNumber("LBVN-9999-ZZZZ")).getErrorCode());
+    }
+}

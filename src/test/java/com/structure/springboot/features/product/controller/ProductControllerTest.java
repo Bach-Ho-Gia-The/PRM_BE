@@ -36,7 +36,7 @@ class ProductControllerTest {
     private final HttpServletRequest request = mock(HttpServletRequest.class);
 
     @Test
-    void oneControllerHasTenGuardedAdminRoutesAndThreePublicGets() {
+    void oneControllerHasFourteenGuardedAdminRoutesAndThreePublicGets() {
         assertEquals("/products", ProductController.class.getAnnotation(RequestMapping.class).value()[0]);
         assertNull(ProductController.class.getAnnotation(PreAuthorize.class));
         int admin = 0;
@@ -73,7 +73,7 @@ class ProductControllerTest {
                 }
             }
         }
-        assertEquals(10, admin);
+        assertEquals(14, admin); // 10 cũ + 4 endpoint variant
         assertEquals(3, publicGets);
     }
 

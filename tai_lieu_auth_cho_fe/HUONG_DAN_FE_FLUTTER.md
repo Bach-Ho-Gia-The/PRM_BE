@@ -940,3 +940,38 @@ Các trường hợp **không phải lỗi app**, đừng cố xử lý ở clie
 ---
 
 *Backend tham chiếu: `TEST_AUTH_SWAGGER.md` (159 ca nghiệm thu) · `GHI_NHO_DU_AN.md` (quyết định + việc còn nợ).*
+
+---
+
+## Phụ lục — Hai nhóm endpoint trước đây chưa được ghi ở đâu
+
+> Bổ sung 17/10/2026 sau đợt soát độ phủ tài liệu.
+
+### P.1 — Ảnh đại diện
+
+| Method | URL | Quyền |
+|---|---|---|
+| `PUT` | `/profiles/me/avatar` | đăng nhập |
+
+`multipart/form-data`, phần tên **`file`**. Trả về `ProfileResponse` với `avatarUrl` mới.
+
+- Chỉ nhận `jpg` · `png` · `webp`, tối đa **5 MB** — cùng luật với ảnh sản phẩm.
+- Ảnh cũ trên Cloudinary bị xoá **sau khi** giao dịch commit, nên upload hỏng thì ảnh cũ vẫn còn.
+- Tài khoản đăng nhập bằng Google có sẵn `avatarUrl` trỏ về ảnh Google; gọi endpoint này là
+  thay bằng ảnh tự tải lên.
+
+### P.2 — Vai trò (`/roles`)
+
+| Method | URL | Quyền |
+|---|---|---|
+| `GET` | `/roles` | ADMIN |
+| `GET` | `/roles/{id}` | ADMIN |
+| `POST` | `/roles` | ADMIN |
+| `PATCH` | `/roles/{id}` | ADMIN |
+| `DELETE` | `/roles/{id}` | ADMIN |
+
+👉 **App Flutter gần như không cần nhóm này.** Hệ thống chỉ có hai vai `ADMIN` và `USER`, đều
+được seed sẵn lúc khởi động. Nhóm endpoint này dành cho màn quản trị nâng cao.
+
+🔴 **Đừng xoá vai `USER`** — `/auth/verify-registration` tra vai này theo tên để gán cho tài khoản
+mới; mất nó là **không ai đăng ký được nữa** (xem `TEST_AUTH_SWAGGER.md` ca J-9b).

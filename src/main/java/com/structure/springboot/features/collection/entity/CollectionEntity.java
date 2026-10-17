@@ -3,6 +3,7 @@ package com.structure.springboot.features.collection.entity;
 import com.structure.springboot.infrastructure.persistence.SoftDeletableEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import org.hibernate.annotations.ColumnDefault;
@@ -20,7 +21,11 @@ import lombok.experimental.SuperBuilder;
  * {@link SoftDeletableEntity} phục vụ các module hiện có, không phải quy tắc đăng tải BST.</p>
  */
 @Entity
-@Table(name = "collections")
+@Table(
+        name = "collections",
+        // Trang cửa hàng luôn lọc BST theo status trước khi phân trang.
+        indexes = @Index(name = "idx_collections_status", columnList = "status")
+)
 @Getter
 @Setter
 @SuperBuilder

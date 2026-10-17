@@ -4,6 +4,11 @@ import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
+
+import java.math.BigDecimal;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.util.Locale;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
@@ -92,6 +97,60 @@ public class BrevoMailClient {
         } catch (RuntimeException ignored) {
             // Xem javadoc: mail báo tin không được phép làm hỏng nghiệp vụ đã hoàn tất.
         }
+    }
+
+    /**
+     * Xác nhận đơn hàng vừa đặt.
+     *
+     * <p>Cùng nhóm "mail báo tin" với {@link #sendPasswordChangedEmail}: {@code @Async} + nuốt
+     * lỗi. Đơn đã nằm trong database rồi, Brevo rớt không được phép làm hỏng việc đặt hàng.</p>
+     *
+     * <p><b>Nhận giá trị rời chứ không nhận {@code OrderEntity}:</b> chạy ở thread khác nên
+     * phiên Hibernate đã đóng, chạm vào quan hệ lazy là {@code LazyInitializationException}.</p>
+     *
+     * <p>⚠️ Tài khoản Brevo Free dùng chung 300 mail/ngày cho CẢ OTP đăng ký lẫn mail này. Hết
+     * quota thì mail này im lặng bỏ qua, còn {@code /auth/register} sẽ trả 503.</p>
+     */
+    @Async
+    public void sendOrderConfirmationEmail(String toEmail, String orderNumber, String receiverName,
+                                           BigDecimal total, String address) {
+        try {
+            send(toEmail, "Xác nhận đơn hàng " + orderNumber, layout(
+                    "Cảm ơn bạn đã đặt hàng",
+                    "Chào " + receiverName + ", chúng tôi đã nhận được đơn hàng của bạn "
+                            + "và đang chờ xác nhận.",
+                    orderBlock(orderNumber, total, address),
+                    "Bạn sẽ nhận được thông báo trong ứng dụng mỗi khi đơn hàng đổi trạng thái.",
+                    "Đơn còn ở trạng thái Chờ xác nhận thì bạn vẫn tự huỷ được trong mục "
+                            + "Đơn hàng của tôi."));
+        } catch (RuntimeException ignored) {
+            // Xem javadoc: mail báo tin không được phép làm hỏng nghiệp vụ đã hoàn tất.
+        }
+    }
+
+    /** Khối tóm tắt đơn: mã đơn, tổng tiền, nơi nhận. */
+    private String orderBlock(String orderNumber, BigDecimal total, String address) {
+        return """
+                <div style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;
+                            padding:18px 20px;">
+                  <div style="font-size:13px;color:#6b7280;">Mã đơn hàng</div>
+                  <div style="font-size:20px;font-weight:700;letter-spacing:1px;color:#111827;
+                              margin-bottom:14px;">%s</div>
+                  <div style="font-size:13px;color:#6b7280;">Tổng thanh toán</div>
+                  <div style="font-size:18px;font-weight:700;color:#111827;margin-bottom:14px;">%s</div>
+                  <div style="font-size:13px;color:#6b7280;">Giao đến</div>
+                  <div style="font-size:14px;line-height:21px;color:#111827;">%s</div>
+                </div>
+                """.formatted(orderNumber, formatMoney(total), address);
+    }
+
+    /** "1.250.000 d" — dấu chấm phân nhóm theo cách viết tiền Việt. */
+    private String formatMoney(BigDecimal amount) {
+        DecimalFormat format = new DecimalFormat("#,###");
+        DecimalFormatSymbols symbols = new DecimalFormatSymbols(Locale.ROOT);
+        symbols.setGroupingSeparator('.');
+        format.setDecimalFormatSymbols(symbols);
+        return format.format(amount) + " đ";
     }
 
     /** Hộp mã lớn, giãn chữ cho dễ đọc và dễ chép tay. */

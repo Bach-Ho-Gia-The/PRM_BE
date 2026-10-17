@@ -93,14 +93,27 @@ class ProductImageServiceTest {
     }
 
     @Test
-    void productCreationKeepsOldActiveDefaultAndForbidsCreatingDeletedProduct() {
+    void productCreationStaysHiddenWithoutThumbnailAndForbidsCreatingDeletedProduct() {
         CategoryEntity category = category();
         when(categories.findById(category.getId())).thenReturn(Optional.of(category));
-        ProductRequest legacy = new ProductRequest("Legacy", null, "SKU-LEGACY", BigDecimal.TEN,
-                null, null, null, null, null, null, null, null, category.getId(), null);
         when(products.save(any(ProductEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertEquals(RecordStatus.ACTIVE, service.createProduct(legacy).status());
+        // Ảnh gallery chỉ upload được SAU khi đã có id sản phẩm, nên sản phẩm tạo mà chưa có
+        // thumbnail bắt buộc phải nằm HIDDEN, nếu không nó hiện ở trang công khai với ô ảnh rỗng.
+        ProductRequest noThumbnail = new ProductRequest("Legacy", null, "SKU-LEGACY", BigDecimal.TEN,
+                null, null, null, null, null, null, null, null, category.getId(), null);
+        assertEquals(RecordStatus.HIDDEN, service.createProduct(noThumbnail).status());
+
+        // Có sẵn ảnh ngoài thì vẫn giữ mặc định ACTIVE như client cũ vẫn trông đợi.
+        ProductRequest withThumbnail = new ProductRequest("Legacy 2", null, "SKU-LEGACY-2", BigDecimal.TEN,
+                null, null, null, null, null, "https://cdn/seed.png", null, null, category.getId(), null);
+        assertEquals(RecordStatus.ACTIVE, service.createProduct(withThumbnail).status());
+
+        // Xin HIDDEN thì vẫn HIDDEN dù đã có ảnh.
+        ProductRequest hidden = new ProductRequest("Legacy 3", null, "SKU-LEGACY-3", BigDecimal.TEN,
+                null, null, null, null, null, "https://cdn/seed.png", null, null, category.getId(),
+                RecordStatus.HIDDEN);
+        assertEquals(RecordStatus.HIDDEN, service.createProduct(hidden).status());
         ProductRequest deleted = new ProductRequest("Deleted", null, "SKU-DELETED", BigDecimal.TEN,
                 null, null, null, null, null, null, null, null, category.getId(), RecordStatus.DELETED);
         assertEquals(ErrorCode.BAD_REQUEST,

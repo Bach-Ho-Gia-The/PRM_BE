@@ -5,9 +5,12 @@ import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.product.dto.request.ProductFilter;
 import com.structure.springboot.features.product.dto.request.ProductRequest;
 import com.structure.springboot.features.product.dto.request.ProductThumbnailRequest;
+import com.structure.springboot.features.product.dto.request.ProductVariantRequest;
+import com.structure.springboot.features.product.dto.request.ProductVariantUpdateRequest;
 import com.structure.springboot.features.product.dto.request.ProductUpdateRequest;
 import com.structure.springboot.features.product.dto.response.ProductDetailResponse;
 import com.structure.springboot.features.product.dto.response.ProductResponse;
+import com.structure.springboot.features.product.dto.response.ProductVariantResponse;
 import com.structure.springboot.features.product.service.ProductService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -23,6 +26,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.UUID;
 
 /** Một controller cho cả /products/admin và các GET công khai, không đổi dữ liệu theo vai trò. */
@@ -114,6 +118,47 @@ public class ProductController {
             HttpServletRequest request) {
         return imageResponse(productService.selectThumbnail(id, body),
                 "Product thumbnail selected successfully", HttpStatus.OK, request);
+    }
+
+    /** Thêm một size + tồn kho. Sản phẩm không có size nào thì khách không đặt mua được. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/admin/{id}/variants")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> addVariant(
+            @PathVariable UUID id, @Valid @RequestBody ProductVariantRequest body,
+            HttpServletRequest request) {
+        return imageResponse(productService.addVariant(id, body),
+                "Product variant added successfully", HttpStatus.CREATED, request);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PatchMapping("/admin/{id}/variants/{variantId}")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> updateVariant(
+            @PathVariable UUID id, @PathVariable UUID variantId,
+            @Valid @RequestBody ProductVariantUpdateRequest body, HttpServletRequest request) {
+        return imageResponse(productService.updateVariant(id, variantId, body),
+                "Product variant updated successfully", HttpStatus.OK, request);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/admin/{id}/variants/{variantId}")
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> removeVariant(
+            @PathVariable UUID id, @PathVariable UUID variantId, HttpServletRequest request) {
+        return imageResponse(productService.removeVariant(id, variantId),
+                "Product variant removed successfully", HttpStatus.OK, request);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin/{id}/variants")
+    public ResponseEntity<ApiResponse<List<ProductVariantResponse>>> getAdminVariants(
+            @PathVariable UUID id, HttpServletRequest request) {
+        return ResponseEntity.ok(
+                ApiResponse.<List<ProductVariantResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Product variants retrieved successfully")
+                        .result(productService.getAdminVariants(id))
+                        .path(request.getRequestURI())
+                        .build()
+        );
     }
 
     private ResponseEntity<ApiResponse<ProductDetailResponse>> imageResponse(

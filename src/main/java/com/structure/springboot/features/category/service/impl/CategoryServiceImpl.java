@@ -16,6 +16,7 @@ import com.structure.springboot.features.category.service.CategoryService;
 import com.structure.springboot.features.category.specification.CategorySpecifications;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.repository.ProductRepository;
+import com.structure.springboot.features.product.specification.ProductSpecifications;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import com.structure.springboot.infrastructure.persistence.StatusSpecifications;
 import lombok.RequiredArgsConstructor;
@@ -96,7 +97,7 @@ public class CategoryServiceImpl implements CategoryService {
         // Product ACTIVE/HIDDEN/legacy null chặn xoá; Product DELETED không chặn.
         // Lọc ở DB bằng EXISTS, không tải danh sách Product hoặc xoá cascade.
         if (productRepository.exists(StatusSpecifications.<ProductEntity>notDeleted()
-                .and((root, query, cb) -> cb.equal(root.get("category").get("id"), id)))) {
+                .and(ProductSpecifications.inCategory(id)))) {
             throw new ApiException(ErrorCode.CONFLICT,
                     "Cannot delete category that still contains products: " + entity.getCategoryName());
         }

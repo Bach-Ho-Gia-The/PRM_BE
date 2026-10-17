@@ -10,7 +10,6 @@ import com.structure.springboot.features.profile.entity.ProfileEntity;
 import com.structure.springboot.features.profile.mapper.ProfileMapper;
 import com.structure.springboot.features.profile.repository.ProfileRepository;
 import com.structure.springboot.features.profile.service.ProfileService;
-import com.structure.springboot.infrastructure.external.cloudinary.CloudinaryService;
 import com.structure.springboot.infrastructure.external.cloudinary.ImageUploadResult;
 import com.structure.springboot.infrastructure.external.cloudinary.ManagedImageService;
 import lombok.RequiredArgsConstructor;
@@ -29,7 +28,6 @@ public class ProfileServiceImpl implements ProfileService {
     private final AccountRepository accountRepository;
     private final ProfileMapper profileMapper;
     private final ManagedImageService managedImageService;
-    private final CloudinaryService cloudinaryService;
 
     /**
      * {@code @Transactional} bình thường chứ không {@code readOnly}: những tài khoản có từ trước
@@ -74,9 +72,11 @@ public class ProfileServiceImpl implements ProfileService {
     @Override
     @Transactional
     public ProfileResponse uploadAvatar(UUID accountId, MultipartFile file) {
+        // Upload TRƯỚC khi khoá hàng profile: chờ mạng trong lúc giữ khoá sẽ giam connection,
+        // mà pool chỉ có vài slot. Request hỏng thì hook rollback dọn ảnh vừa lên.
+        ImageUploadResult uploaded = managedImageService.upload(file, "profiles");
         ProfileEntity entity = loadOrCreateForWrite(accountId);
         String oldPublicId = entity.getAvatarPublicId();
-        ImageUploadResult uploaded = managedImageService.upload(file, "profiles");
         entity.setAvatarUrl(uploaded.url());
         entity.setAvatarPublicId(uploaded.publicId());
         profileRepository.saveAndFlush(entity); // Stage DB change; not visible until commit.
@@ -103,7 +103,7 @@ public class ProfileServiceImpl implements ProfileService {
             profileRepository.delete(profile);
             // Account deletion is not an image replacement: do not fail a committed account
             // deletion if Cloudinary is down. The existing lifecycle logs one cleanup attempt.
-            cloudinaryService.deleteAfterCommit(profile.getAvatarPublicId());
+            managedImageService.deleteAfterCommit(profile.getAvatarPublicId());
         });
     }
 
