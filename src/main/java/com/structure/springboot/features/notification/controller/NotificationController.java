@@ -7,7 +7,9 @@ import com.structure.springboot.features.notification.dto.response.NotificationR
 import com.structure.springboot.features.notification.service.NotificationService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,7 +37,8 @@ public class NotificationController {
     public ResponseEntity<ApiResponse<PageResponse<NotificationResponse>>> getMyNotifications(
             @AuthenticationPrincipal AuthenticatedUser currentUser,
             @RequestParam(defaultValue = "false") boolean unreadOnly,
-            @PageableDefault(size = 20) Pageable pageable,
+            @ParameterObject
+            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
             HttpServletRequest request) {
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<NotificationResponse>>builder()

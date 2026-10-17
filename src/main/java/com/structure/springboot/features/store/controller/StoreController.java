@@ -9,7 +9,10 @@ import com.structure.springboot.features.store.service.StoreService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -34,6 +37,8 @@ public class StoreController {
 
     @GetMapping
     public ResponseEntity<ApiResponse<PageResponse<StoreResponse>>> getPublicStores(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.DESC)
             Pageable pageable, HttpServletRequest request) {
         return ok(storeService.getPublicStores(pageable), "Stores retrieved successfully", request);
     }
@@ -49,6 +54,8 @@ public class StoreController {
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/admin")
     public ResponseEntity<ApiResponse<PageResponse<StoreResponse>>> getAdminStores(
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.DESC)
             Pageable pageable, HttpServletRequest request) {
         return ok(storeService.getAdminStores(pageable), "Stores retrieved successfully", request);
     }

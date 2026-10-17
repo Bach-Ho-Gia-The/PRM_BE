@@ -11,7 +11,9 @@ import com.structure.springboot.features.chat.service.ConversationService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
@@ -58,7 +60,8 @@ public class ConversationController {
     @GetMapping("/me/messages")
     public ResponseEntity<ApiResponse<PageResponse<ChatMessageResponse>>> getMyMessageHistory(
             @AuthenticationPrincipal AuthenticatedUser currentUser,
-            @PageableDefault(size = 30) Pageable pageable,
+            @ParameterObject
+            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
             HttpServletRequest request) {
         return pageOk(conversationService.getMyMessageHistory(
                 AuthenticatedUser.requireId(currentUser), pageable), request);
@@ -109,7 +112,8 @@ public class ConversationController {
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/admin")
     public ResponseEntity<ApiResponse<PageResponse<ConversationSummaryResponse>>> getAdminConversations(
-            @PageableDefault(size = 20) Pageable pageable, HttpServletRequest request) {
+            @ParameterObject
+            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable, HttpServletRequest request) {
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<ConversationSummaryResponse>>builder()
                         .code(HttpStatus.OK.value())
@@ -137,7 +141,9 @@ public class ConversationController {
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/admin/{id}/messages")
     public ResponseEntity<ApiResponse<PageResponse<ChatMessageResponse>>> getAdminMessageHistory(
-            @PathVariable UUID id, @PageableDefault(size = 30) Pageable pageable,
+            @PathVariable UUID id,
+            @ParameterObject
+            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
             HttpServletRequest request) {
         return pageOk(conversationService.getAdminMessageHistory(id, pageable), request);
     }
