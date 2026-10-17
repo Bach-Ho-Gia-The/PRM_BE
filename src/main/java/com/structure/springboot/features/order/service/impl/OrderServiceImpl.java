@@ -24,7 +24,6 @@ import com.structure.springboot.features.product.entity.ProductVariantEntity;
 import com.structure.springboot.features.product.enums.ProductSize;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
-import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -273,7 +272,7 @@ public class OrderServiceImpl implements OrderService {
                                       Map<UUID, ProductEntity> products,
                                       Map<String, ProductVariantEntity> variants) {
         ProductEntity product = Optional.ofNullable(products.get(request.productId()))
-                .filter(p -> p.getStatus() == null || p.getStatus() == RecordStatus.ACTIVE)
+                .filter(ProductEntity::isVisible)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Product not available: " + request.productId()));
 

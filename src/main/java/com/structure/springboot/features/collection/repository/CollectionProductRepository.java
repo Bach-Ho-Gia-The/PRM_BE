@@ -20,8 +20,6 @@ public interface CollectionProductRepository extends JpaRepository<CollectionPro
     /** Chỉ nạp các hàng liên kết để xoá hàng loạt khi xoá BST; không fetch Product. */
     List<CollectionProductEntity> findByCollectionId(UUID collectionId);
 
-    boolean existsByCollectionIdAndProductId(UUID collectionId, UUID productId);
-
     /** Đếm tất cả liên kết; không dùng số này thay cho kiểm tra Product ACTIVE khi đăng BST. */
     long countByCollectionId(UUID collectionId);
 }

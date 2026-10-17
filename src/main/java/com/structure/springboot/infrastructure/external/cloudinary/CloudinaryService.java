@@ -4,6 +4,7 @@ import com.cloudinary.Cloudinary;
 import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -17,11 +18,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CloudinaryService {
@@ -36,9 +36,6 @@ public class CloudinaryService {
 
     private static final Set<String> WEBP_CHUNKS =
             Set.of("VP8 ", "VP8L", "VP8X");
-
-    private static final Logger log =
-            LoggerFactory.getLogger(CloudinaryService.class);
 
     private final Cloudinary cloudinary;
     private final CloudinaryProperties properties;
@@ -96,16 +93,9 @@ public class CloudinaryService {
                     ErrorCode.BAD_GATEWAY,
                     "Image storage returned an invalid response"
             );
-        } catch (IOException exception) {
-            throw new ApiException(
-                    ErrorCode.BAD_GATEWAY,
-                    "Image upload failed"
-            );
-        } catch (RuntimeException exception) {
-            if (exception instanceof ApiException apiException) {
-                throw apiException;
-            }
-
+        } catch (ApiException exception) {
+            throw exception;
+        } catch (IOException | RuntimeException exception) {
             // Không trả nguyên lỗi SDK vì có thể chứa thông tin nội bộ.
             throw new ApiException(
                     ErrorCode.BAD_GATEWAY,
@@ -147,16 +137,9 @@ public class CloudinaryService {
                         "Image deletion failed"
                 );
             }
-        } catch (IOException exception) {
-            throw new ApiException(
-                    ErrorCode.BAD_GATEWAY,
-                    "Image deletion failed"
-            );
-        } catch (RuntimeException exception) {
-            if (exception instanceof ApiException apiException) {
-                throw apiException;
-            }
-
+        } catch (ApiException exception) {
+            throw exception;
+        } catch (IOException | RuntimeException exception) {
             throw new ApiException(
                     ErrorCode.BAD_GATEWAY,
                     "Image deletion failed"
@@ -216,6 +199,17 @@ public class CloudinaryService {
                 : contentType.split(";", 2)[0]
                 .trim()
                 .toLowerCase(Locale.ROOT);
+
+        /*
+         * Magic byte ở trên mới là lớp kiểm thật: nó đọc nội dung file, còn Content-Type thì client
+         * muốn khai gì cũng được nên không chặn được kẻ tấn công. Yêu cầu khớp tuyệt đối chỉ chặn
+         * nhầm người dùng thật: http.MultipartFile.fromPath và Dio của Flutter đều mặc định gửi
+         * application/octet-stream khi FE không tự set contentType.
+         * Vẫn từ chối khi client khai RÕ một loại ảnh khác với nội dung thật (vd khai png, ruột jpg).
+         */
+        if (actualMime.isEmpty() || "application/octet-stream".equals(actualMime)) {
+            return;
+        }
 
         String expectedMime = "jpg".equals(format)
                 ? "image/jpeg"

@@ -11,6 +11,7 @@ import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.util.Locale;
+import java.util.UUID;
 
 /**
  * Bộ lọc danh sách sản phẩm cho trang danh mục.
@@ -96,6 +97,14 @@ public final class ProductSpecifications {
         return maxPrice == null
                 ? Specification.unrestricted()
                 : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("price"), maxPrice);
+    }
+
+    /**
+     * Mọi Product trỏ tới một Category, bất kể trạng thái. Dùng cho lệnh xoá Category: ghép với
+     * {@code StatusSpecifications.notDeleted()} để hỏi DB bằng EXISTS thay vì tải danh sách Product.
+     */
+    public static Specification<ProductEntity> inCategory(UUID categoryId) {
+        return (root, query, cb) -> cb.equal(root.get("category").get("id"), categoryId);
     }
 
     public static Specification<ProductEntity> isFeatured(Boolean featured) {

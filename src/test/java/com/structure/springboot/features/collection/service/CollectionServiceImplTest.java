@@ -374,8 +374,13 @@ class CollectionServiceImplTest {
         verifyNoInteractions(collectionProductRepository);
     }
 
+    /**
+     * Ảnh được upload TRƯỚC khi khoá hàng, nên một yêu cầu sai version/sai trạng thái vẫn tiêu tốn
+     * một lượt upload. Đổi lại, khoá bi quan và connection của pool không bị giam trong lúc chờ
+     * mạng. Lỗi vẫn phải là CONFLICT, và transaction rollback sẽ kích hook dọn ảnh vừa lên.
+     */
     @Test
-    void uploadCoverRequiresHiddenAndCurrentVersionBeforeUploading() {
+    void uploadCoverStillRejectsWrongVersionAndActiveCollection() {
         CollectionEntity collection = collection(RecordStatus.HIDDEN);
         collection.setVersion(5L);
         when(collectionRepository.findWithLockById(collection.getId())).thenReturn(Optional.of(collection));
@@ -386,7 +391,10 @@ class CollectionServiceImplTest {
         collection.setStatus(RecordStatus.ACTIVE);
         assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class, () -> service.uploadCover(
                 collection.getId(), new CollectionVersionRequest(5L), file)).getErrorCode());
-        verify(managedImageService, never()).upload(any(), any());
+
+        // Ảnh KHÔNG được ghi vào entity khi yêu cầu bị từ chối.
+        assertNull(collection.getCoverImagePublicId());
+        verify(managedImageService, never()).deleteOrFail(any(), any(), any());
     }
 
     @Test

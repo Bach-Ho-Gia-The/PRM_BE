@@ -31,7 +31,6 @@ public interface ProductRepository extends JpaRepository<ProductEntity, UUID>,
     boolean existsBySlugAndIdNot(String slug, UUID id);
 
     // Chặn xoá Category khi vẫn còn sản phẩm trỏ tới -> thay cho cascade đã gỡ bỏ
-    boolean existsByCategoryId(UUID categoryId);
 
     /** Serialize product image edits and metadata/status updates with checkout image snapshots. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)

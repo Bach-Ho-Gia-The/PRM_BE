@@ -44,9 +44,14 @@ import java.util.UUID;
 public class ProductServiceImpl implements ProductService {
 
     private static final Set<String> PRODUCT_SORT_FIELDS = Set.of("name", "price", "createdAt", "updatedAt");
+    /*
+     * nullsLast: sortOrder khai nullable=false, nhưng ddl-auto=update KHÔNG siết được NOT NULL lên
+     * bảng đã có dữ liệu, nên hàng cũ vẫn có thể mang null. nextSortOrder() đã phòng null từ trước;
+     * comparator phải phòng theo, nếu không sửa gallery của sản phẩm cũ sẽ ném NPE.
+     */
     private static final Comparator<ProductImageEntity> IMAGE_ORDER = Comparator
-            .comparing(ProductImageEntity::getSortOrder)
-            .thenComparing(ProductImageEntity::getId);
+            .comparing(ProductImageEntity::getSortOrder, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(ProductImageEntity::getId, Comparator.nullsLast(Comparator.naturalOrder()));
 
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
@@ -63,16 +68,19 @@ public class ProductServiceImpl implements ProductService {
         if (request.status() == RecordStatus.DELETED) {
             throw new ApiException(ErrorCode.BAD_REQUEST, "A new product cannot be DELETED");
         }
-        managedImageService.requireUnmanagedUrl(request.thumbnail());
+        managedImageService.requireExternalImageUrl(request.thumbnail());
         CategoryEntity category = requireActiveCategory(request.categoryId());
 
         ProductEntity entity = productMapper.toEntity(request);
         entity.setCategory(category);
         entity.setSlug(resolveSlug(request.slug(), request.name(), null));
-        if (request.status() == RecordStatus.HIDDEN) {
+        // Không có ảnh thì không được lên shop. Ảnh gallery chỉ upload được SAU khi đã có id sản
+        // phẩm, nên nếu vẫn để ACTIVE thì mọi sản phẩm mới đều hiện ở trang công khai với ô ảnh
+        // rỗng trong lúc admin đi chọn file. Cùng quy tắc với createCollection: chuẩn bị xong mới đăng.
+        if (request.status() == RecordStatus.HIDDEN || !StringUtils.hasText(request.thumbnail())) {
             entity.setStatus(RecordStatus.HIDDEN);
         }
-        // No status supplied: keep the previous ACTIVE default for existing API clients.
+        // Có thumbnail và không yêu cầu HIDDEN: giữ mặc định ACTIVE cho client cũ.
         return productMapper.toDetailResponse(productRepository.save(entity));
     }
 
@@ -86,7 +94,7 @@ public class ProductServiceImpl implements ProductService {
             throw new ApiException(ErrorCode.CONFLICT, "Product SKU already exists: " + request.sku());
         }
         if (request.thumbnail() != null && !Objects.equals(request.thumbnail(), entity.getThumbnail())) {
-            managedImageService.requireUnmanagedUrl(request.thumbnail());
+            managedImageService.requireExternalImageUrl(request.thumbnail());
             if (StringUtils.hasText(entity.getThumbnailPublicId())) {
                 throw new ApiException(ErrorCode.BAD_REQUEST,
                         "Use the gallery API to change a managed thumbnail");
@@ -107,7 +115,7 @@ public class ProductServiceImpl implements ProductService {
         if (request.thumbnail() != null && request.thumbnail().isBlank()) {
             setThumbnail(entity, entity.getImages().stream().min(IMAGE_ORDER).orElse(null));
         }
-        if (isVisible(entity) && !StringUtils.hasText(entity.getThumbnail())
+        if (entity.isVisible() && !StringUtils.hasText(entity.getThumbnail())
                 && (request.thumbnail() != null || previousStatus == RecordStatus.HIDDEN)) {
             throw new ApiException(ErrorCode.CONFLICT, "An ACTIVE product must have a thumbnail");
         }
@@ -126,9 +134,11 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Transactional
     public ProductDetailResponse addImage(UUID id, MultipartFile file, boolean asThumbnail) {
+        // Upload TRƯỚC khi chạm DB: giữ khoá bi quan trong lúc chờ mạng sẽ chặn admin khác sửa
+        // cùng sản phẩm, và giam connection của pool. Request hỏng thì hook rollback dọn ảnh.
+        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         ProductEntity product = requireManageableForWrite(id);
         int sortOrder = nextSortOrder(product);
-        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         ProductImageEntity image = newImage(product, uploaded, sortOrder);
         product.getImages().add(image);
         if (asThumbnail || !StringUtils.hasText(product.getThumbnail())) {
@@ -141,13 +151,15 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Transactional
     public ProductDetailResponse replaceImage(UUID id, UUID imageId, MultipartFile file) {
+        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         ProductEntity product = requireManageableForWrite(id);
-        return replaceImage(product, requireImage(product, imageId), file);
+        return replaceImage(product, requireImage(product, imageId), uploaded);
     }
 
     @Override
     @Transactional
     public ProductDetailResponse uploadThumbnail(UUID id, MultipartFile file) {
+        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         ProductEntity product = requireManageableForWrite(id);
         // Existing gallery thumbnail: replace its row, not merely its URL. The old managed
         // file is deleted unless an order snapshot still references it.
@@ -155,7 +167,7 @@ public class ProductServiceImpl implements ProductService {
                 .filter(image -> isThumbnail(product, image))
                 .findFirst().orElse(null);
         if (selected != null) {
-            return replaceImage(product, selected, file);
+            return replaceImage(product, selected, uploaded);
         }
 
         // An older external/standalone thumbnail is not in the gallery. Add the new managed
@@ -163,7 +175,6 @@ public class ProductServiceImpl implements ProductService {
         String oldUrl = product.getThumbnail();
         String oldPublicId = product.getThumbnailPublicId();
         int sortOrder = nextSortOrder(product);
-        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         ProductImageEntity image = newImage(product, uploaded, sortOrder);
         product.getImages().add(image);
         setThumbnail(product, image);
@@ -189,22 +200,26 @@ public class ProductServiceImpl implements ProductService {
         ProductImageEntity removed = requireImage(product, imageId);
         String oldUrl = removed.getImageUrl();
         String oldPublicId = removed.getPublicId();
-        if (isThumbnail(product, removed)) {
-            // Prefer the next gallery image; wrap to the first if the removed one was last.
-            List<ProductImageEntity> remaining = product.getImages().stream()
-                    .filter(image -> image != removed).sorted(IMAGE_ORDER).toList();
-            if (remaining.isEmpty() && isVisible(product)) {
-                throw new ApiException(ErrorCode.CONFLICT, "Cannot remove the last image of an ACTIVE product");
-            }
+        boolean wasThumbnail = isThumbnail(product, removed);
+        List<ProductImageEntity> remaining = product.getImages().stream()
+                .filter(image -> image != removed).sorted(IMAGE_ORDER).toList();
+
+        // Một guard duy nhất, đặt TRƯỚC mọi thay đổi: sản phẩm đang bán phải còn thumbnail sau khi
+        // gỡ ảnh. Hai nhánh là hai cách mất thumbnail — gỡ đúng ảnh đang chọn mà không còn ảnh nào
+        // thay thế, hoặc sản phẩm cũ vốn đã không có thumbnail nào.
+        if (product.isVisible()
+                && (wasThumbnail ? remaining.isEmpty() : !StringUtils.hasText(product.getThumbnail()))) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "An ACTIVE product must keep a thumbnail; hide it or pick another image first");
+        }
+        if (wasThumbnail) {
+            // Ưu tiên ảnh kế tiếp; hết thì quay về ảnh đầu, không còn ảnh nào thì bỏ trống.
             ProductImageEntity next = remaining.stream()
                     .filter(image -> IMAGE_ORDER.compare(image, removed) > 0)
                     .findFirst().orElse(remaining.isEmpty() ? null : remaining.get(0));
             setThumbnail(product, next);
         }
         product.getImages().remove(removed); // orphanRemoval deletes only this gallery row.
-        if (isVisible(product) && !StringUtils.hasText(product.getThumbnail())) {
-            throw new ApiException(ErrorCode.CONFLICT, "Cannot remove the last image of an ACTIVE product");
-        }
         productRepository.saveAndFlush(product);
         deleteIfUnused(product, oldUrl, oldPublicId);
         return productMapper.toDetailResponse(product);
@@ -229,7 +244,7 @@ public class ProductServiceImpl implements ProductService {
     @Transactional(readOnly = true)
     public ProductDetailResponse getProductById(UUID id) {
         return productRepository.findById(id)
-                .filter(ProductServiceImpl::isVisible)
+                .filter(ProductEntity::isVisible)
                 .map(productMapper::toDetailResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Product not found with id: " + id));
     }
@@ -238,7 +253,7 @@ public class ProductServiceImpl implements ProductService {
     @Transactional(readOnly = true)
     public ProductDetailResponse getProductBySlug(String slug) {
         return productRepository.findBySlug(slug)
-                .filter(ProductServiceImpl::isVisible)
+                .filter(ProductEntity::isVisible)
                 .map(productMapper::toDetailResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Product not found with slug: " + slug));
     }
@@ -263,11 +278,12 @@ public class ProductServiceImpl implements ProductService {
         return PageResponse.from(productRepository.findAll(spec, pageable).map(productMapper::toResponse));
     }
 
-    private ProductDetailResponse replaceImage(ProductEntity product, ProductImageEntity image, MultipartFile file) {
+    /** Ảnh đã được upload bởi method công khai trước khi mở khoá hàng; ở đây chỉ còn việc ghi DB. */
+    private ProductDetailResponse replaceImage(ProductEntity product, ProductImageEntity image,
+                                               ImageUploadResult uploaded) {
         String oldUrl = image.getImageUrl();
         String oldPublicId = image.getPublicId();
         boolean selected = isThumbnail(product, image);
-        ImageUploadResult uploaded = managedImageService.upload(file, "products");
         image.setImageUrl(uploaded.url());
         image.setPublicId(uploaded.publicId());
         if (selected) {
@@ -380,11 +396,6 @@ public class ProductServiceImpl implements ProductService {
             throw new ApiException(ErrorCode.NOT_FOUND, "Product not found with id: " + id);
         }
         return entity;
-    }
-
-    /** Hàng dữ liệu cũ chưa có cột status (null) được coi là đang bán, xem {@code SoftDeletableEntity}. */
-    private static boolean isVisible(ProductEntity entity) {
-        return entity.getStatus() == null || entity.getStatus() == RecordStatus.ACTIVE;
     }
 
     /**

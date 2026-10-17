@@ -1,6 +1,7 @@
 package com.structure.springboot.features.product.entity;
 
 import com.structure.springboot.features.category.entity.CategoryEntity;
+import com.structure.springboot.infrastructure.persistence.RecordStatus;
 import com.structure.springboot.infrastructure.persistence.SoftDeletableEntity;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -15,7 +16,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Entity
-@Table(name = "products")
+@Table(
+        name = "products",
+        // Postgres KHÔNG tự tạo index cho cột khoá ngoại. Thiếu idx category_id thì lọc theo danh
+        // mục và lệnh xoá danh mục đều quét toàn bảng products. Cùng khuôn với collection_products.
+        indexes = {
+                @Index(name = "idx_products_category_id", columnList = "category_id"),
+                @Index(name = "idx_products_status", columnList = "status")
+        }
+)
 @Getter
 @Setter
 @SuperBuilder
@@ -92,4 +101,15 @@ public class ProductEntity extends SoftDeletableEntity {
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("sortOrder ASC, id ASC")
     private List<ProductImageEntity> images = new ArrayList<>();
+
+    /**
+     * Sản phẩm có đang được bán không. Hàng dữ liệu cũ chưa có cột status (null) vẫn tính là đang
+     * bán — cùng quy ước với {@code StatusSpecifications.visible()} dùng ở tầng truy vấn.
+     *
+     * <p>Để ở entity vì Product, Collection và Order đều cần đúng một định nghĩa này; trước đây
+     * mỗi service chép một bản, sửa quy ước ở một chỗ là ba nơi lệch nhau.</p>
+     */
+    public boolean isVisible() {
+        return getStatus() == null || getStatus() == RecordStatus.ACTIVE;
+    }
 }

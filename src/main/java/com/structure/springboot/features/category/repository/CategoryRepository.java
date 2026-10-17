@@ -11,7 +11,6 @@ import java.util.UUID;
 @Repository
 public interface CategoryRepository extends JpaRepository<CategoryEntity, UUID>,
         JpaSpecificationExecutor<CategoryEntity> {
-    Optional<CategoryEntity> findByCategoryNameIgnoreCase(String categoryName);
     Optional<CategoryEntity> findBySlug(String slug);
     boolean existsBySlug(String slug);
     boolean existsBySlugAndIdNot(String slug, UUID id);

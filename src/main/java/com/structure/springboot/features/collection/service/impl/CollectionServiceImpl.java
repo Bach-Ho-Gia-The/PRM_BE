@@ -36,13 +36,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -131,9 +128,11 @@ public class CollectionServiceImpl implements CollectionService {
     @Override
     @Transactional
     public CollectionDetailResponse uploadCover(UUID id, CollectionVersionRequest request, MultipartFile file) {
+        // Upload TRƯỚC khi khoá hàng: chờ mạng trong lúc đang giữ khoá sẽ chặn admin khác và
+        // giam connection của pool. Request hỏng thì hook rollback dọn ảnh vừa lên.
+        ImageUploadResult uploaded = managedImageService.upload(file, "collections");
         CollectionEntity collection = requireHidden(id, request.expectedVersion());
         String oldPublicId = collection.getCoverImagePublicId();
-        ImageUploadResult uploaded = managedImageService.upload(file, "collections");
         collection.setCoverImageUrl(uploaded.url());
         collection.setCoverImagePublicId(uploaded.publicId());
         collectionRepository.flush(); // Uncommitted until Cloudinary confirms deletion of the old cover.
@@ -196,7 +195,7 @@ public class CollectionServiceImpl implements CollectionService {
         CollectionEntity collection = requireHidden(id, request.expectedVersion());
         List<CollectionProductEntity> links = collectionProductRepository
                 .findByCollectionIdOrderBySortOrderAscIdAsc(id);
-        if (links.stream().noneMatch(link -> isProductVisible(link.getProduct()))) {
+        if (links.stream().noneMatch(link -> link.getProduct().isVisible())) {
             throw new ApiException(ErrorCode.CONFLICT,
                     "Collection must contain at least one visible product before publishing");
         }
@@ -335,16 +334,11 @@ public class CollectionServiceImpl implements CollectionService {
             if (product == null) {
                 throw new ApiException(ErrorCode.NOT_FOUND, "Product not found with id: " + id);
             }
-            if (!isProductVisible(product)) {
+            if (!product.isVisible()) {
                 throw new ApiException(ErrorCode.CONFLICT, "Product is not visible: " + id);
             }
         }
         return products;
-    }
-
-    /** Dữ liệu cũ có status null vẫn là ACTIVE theo StatusSpecifications.visible(). */
-    private static boolean isProductVisible(ProductEntity product) {
-        return product.getStatus() == null || product.getStatus() == RecordStatus.ACTIVE;
     }
 
     private CollectionDetailResponse toDetailResponse(CollectionEntity collection) {
@@ -361,7 +355,7 @@ public class CollectionServiceImpl implements CollectionService {
                 collection.getStatus(),
                 collection.getVersion(),
                 links.stream().map(collectionMapper::toProductResponse).toList(),
-                links.stream().filter(link -> isProductVisible(link.getProduct())).count(),
+                links.stream().filter(link -> link.getProduct().isVisible()).count(),
                 collection.getCreatedAt(),
                 collection.getUpdatedAt()
         );
@@ -400,17 +394,11 @@ public class CollectionServiceImpl implements CollectionService {
         if (trimmed.length() > 500) {
             throw new ApiException(ErrorCode.BAD_REQUEST, "Cover URL must not exceed 500 characters");
         }
-        try {
-            URI uri = new URI(trimmed);
-            String scheme = uri.getScheme();
-            if (scheme == null || uri.getHost() == null
-                    || !(scheme.toLowerCase(Locale.ROOT).equals("http")
-                    || scheme.toLowerCase(Locale.ROOT).equals("https"))) {
-                throw new ApiException(ErrorCode.BAD_REQUEST, "Cover URL must use http or https");
-            }
-        } catch (URISyntaxException ex) {
-            throw new ApiException(ErrorCode.BAD_REQUEST, "Invalid cover URL");
+        // Ảnh bìa KHÔNG nhận chuỗi rỗng: muốn gỡ ảnh thì gửi cờ clearCoverImage.
+        if (trimmed.isEmpty()) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "Cover URL must use http or https");
         }
+        managedImageService.requireExternalImageUrl(trimmed);
         return trimmed;
     }
 }
