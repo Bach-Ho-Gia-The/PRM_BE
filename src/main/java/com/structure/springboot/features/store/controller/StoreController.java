@@ -38,7 +38,7 @@ public class StoreController {
     @GetMapping
     public ResponseEntity<ApiResponse<PageResponse<StoreResponse>>> getPublicStores(
             @ParameterObject
-            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.DESC)
+            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.ASC)
             Pageable pageable, HttpServletRequest request) {
         return ok(storeService.getPublicStores(pageable), "Stores retrieved successfully", request);
     }
@@ -55,7 +55,7 @@ public class StoreController {
     @GetMapping("/admin")
     public ResponseEntity<ApiResponse<PageResponse<StoreResponse>>> getAdminStores(
             @ParameterObject
-            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.DESC)
+            @PageableDefault(size = 20, sort = "storeName", direction = Sort.Direction.ASC)
             Pageable pageable, HttpServletRequest request) {
         return ok(storeService.getAdminStores(pageable), "Stores retrieved successfully", request);
     }

@@ -9,7 +9,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -38,7 +37,7 @@ public class NotificationController {
             @AuthenticationPrincipal AuthenticatedUser currentUser,
             @RequestParam(defaultValue = "false") boolean unreadOnly,
             @ParameterObject
-            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
+            @PageableDefault(size = 20) Pageable pageable,
             HttpServletRequest request) {
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<NotificationResponse>>builder()

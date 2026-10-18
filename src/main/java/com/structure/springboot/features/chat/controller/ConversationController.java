@@ -13,7 +13,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
@@ -61,7 +60,7 @@ public class ConversationController {
     public ResponseEntity<ApiResponse<PageResponse<ChatMessageResponse>>> getMyMessageHistory(
             @AuthenticationPrincipal AuthenticatedUser currentUser,
             @ParameterObject
-            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
+            @PageableDefault(size = 20) Pageable pageable,
             HttpServletRequest request) {
         return pageOk(conversationService.getMyMessageHistory(
                 AuthenticatedUser.requireId(currentUser), pageable), request);
@@ -113,7 +112,7 @@ public class ConversationController {
     @GetMapping("/admin")
     public ResponseEntity<ApiResponse<PageResponse<ConversationSummaryResponse>>> getAdminConversations(
             @ParameterObject
-            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable, HttpServletRequest request) {
+            @PageableDefault(size = 20) Pageable pageable, HttpServletRequest request) {
         return ResponseEntity.ok(
                 ApiResponse.<PageResponse<ConversationSummaryResponse>>builder()
                         .code(HttpStatus.OK.value())
@@ -143,7 +142,7 @@ public class ConversationController {
     public ResponseEntity<ApiResponse<PageResponse<ChatMessageResponse>>> getAdminMessageHistory(
             @PathVariable UUID id,
             @ParameterObject
-            @PageableDefault(size = 20, direction = Sort.Direction.DESC) Pageable pageable,
+            @PageableDefault(size = 20) Pageable pageable,
             HttpServletRequest request) {
         return pageOk(conversationService.getAdminMessageHistory(id, pageable), request);
     }
