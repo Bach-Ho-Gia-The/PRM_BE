@@ -4,8 +4,8 @@
 > **Ca test** (thao tác → kết quả mong muốn). Mọi message trong cột "Kết quả mong muốn" đều chép
 > đúng chuỗi backend thật sự trả về, không phải mô tả.
 >
-> **Phạm vi:** 10 endpoint `/auth` + 9 endpoint `/accounts` + 3 endpoint `/profiles`.
-> **Tổng: 159 ca** — A 28 · B 14 · C 16 · D 15 · E 21 · F 17 · G 8 · H 17 · I 9 · J 14.
+> **Phạm vi:** 10 endpoint `/auth` + 10 endpoint `/accounts` + 4 endpoint `/profiles` = **24**.
+> **Tổng: 174 ca** — A 28 · B 14 · C 16 · D 15 · E 22 · F 13 · G 8 · H 17 · I 9 · J 14 · **L 18**.
 >
 > Bên Flutter đọc `HUONG_DAN_FE_FLUTTER.md` — cùng bộ nghiệp vụ này nhưng viết theo góc client.
 
@@ -409,7 +409,8 @@ khẩu mới mà không phải giữ mã OTP sống lâu. Vé dùng được **�
 | E-2 | Mail nhận được | Tiêu đề *"Mã xác minh đặt lại mật khẩu"*, hộp mã lớn, dòng hạn dùng **90 giây** | ☐ |
 | E-3 | `forgot-password` với email **không tồn tại** | **200**, chuỗi **giống hệt E-1**, không có mail nào gửi đi | ☐ |
 | E-4 | Bấm lại ngay trong 20 giây | **200** (không phải 429!) nhưng **không có mail thứ hai** — im lặng bỏ qua | ☐ |
-| E-5 | `forgot-password` cho tài khoản đang `LOCKED` | **200**, không có mail | ☐ |
+| E-5 | `forgot-password` cho tài khoản `LOCKED` + `lockedUntil` **tương lai** | **200**, không có mail | ☐ |
+| E-5b | `forgot-password` cho tài khoản `LOCKED` + `lockedUntil` **đã qua** | **200** và **CÓ mail** — khoá tạm đã tự hết hạn thì phải lấy lại được mật khẩu | ☐ |
 | E-6 | `POST /auth/verify-otp` `{"email":"user@example.com","otp":"<mã đúng>"}` | **200** `"Verification successful"`, body `{ticket, expiresIn:300}` | ☐ |
 | E-7 | `verify-otp` với mã sai | **400** `"Incorrect verification code"` | ☐ |
 | E-8 | Sai đủ **5 lần** | **429** `"Too many incorrect attempts. Please request a new code."` | ☐ |
@@ -437,12 +438,14 @@ khẩu mới mà không phải giữ mã OTP sống lâu. Vé dùng được **�
 Không bao giờ trả mật khẩu, kể cả dạng băm; chỉ có cờ `hasPassword` để frontend biết nên hiện
 nút "Đổi mật khẩu" hay "Đặt mật khẩu".
 
-**`PATCH /accounts/me` — đổi email, BẮT BUỘC `currentPassword`**
+**Đổi email — HAI bước, `currentPassword` + OTP gửi tới địa chỉ MỚI** (ca test ở §L)
 
-Email là thứ dùng để khôi phục tài khoản, nên **đổi được email là đổi được chủ sở hữu**. Không
-hỏi lại mật khẩu thì một chiếc máy quên khoá màn hình — hay một token bị đánh cắp — đủ để chiếm
-tài khoản vĩnh viễn. Đổi thành công ⇒ **thu hồi mọi phiên** (mốc logout cắm theo email, phải cắm
-theo email **cũ**, không thì token cũ lọt lưới).
+Email là thứ dùng để khôi phục tài khoản, nên **đổi được email là đổi được chủ sở hữu**. Mật
+khẩu chỉ chứng minh "đúng người đang ngồi đây"; phải có thêm mã gửi tới địa chỉ mới mới chứng
+minh được "hộp thư đó là của bạn". Gộp một bước thì gõ nhầm một chữ là mất tài khoản vĩnh viễn,
+và người mượn được máy đang mở cũng dời được địa chỉ khôi phục đi chỗ khác.
+Đổi thành công ⇒ **thu hồi mọi phiên** (mốc logout cắm theo email, phải cắm theo email **cũ**,
+không thì token cũ lọt lưới).
 
 **`PATCH /accounts/me/password` — đổi mật khẩu**
 
@@ -464,12 +467,8 @@ theo email **cũ**, không thì token cũ lọt lưới).
 |---|---|---|---|
 | F-1 | `GET /accounts/me` khi đã đăng nhập | **200**, body đủ 7 field, **không có** `password` dưới bất kỳ dạng nào | ☐ |
 | F-2 | `GET /accounts/me` không gửi token | **401** | ☐ |
-| F-3 | `PATCH /accounts/me` `{"email":"moi@gmail.com"}` — **thiếu** `currentPassword` | **400** `"Current password is required"` | ☐ |
-| F-4 | `PATCH /accounts/me` `{"email":"moi@gmail.com","currentPassword":"sai-bet"}` | **401** `"Current password is incorrect"`, email **không đổi** | ☐ |
-| F-5 | `PATCH /accounts/me` với `currentPassword` đúng | **200** `"Account updated successfully"`, email đổi | ☐ |
-| F-6 | Sau F-5, gọi lại `GET /accounts/me` bằng **token cũ** | **401** — đổi email thu hồi mọi phiên | ☐ |
-| F-7 | Đổi email sang địa chỉ **đã có người dùng** | **409** `"Account email already exists: ..."` | ☐ |
-| F-8 | Tài khoản Google thuần gọi `PATCH /accounts/me` | **409** `"This account has no password yet..."` | ☐ |
+| F-3 | Đổi email — **toàn bộ chuyển sang §L** | xem §L | ☐ |
+| F-8 | Tài khoản Google thuần gọi `POST /accounts/me/email/request` | **409** `"This account has no password yet..."` | ☐ |
 | F-9 | `PATCH /accounts/me/password` `{"currentPassword":"User@12345","newPassword":"New@12345"}` | **200** `"Password changed successfully. Please sign in again."` | ☐ |
 | F-10 | Hộp thư sau F-9 | Mail *"Mật khẩu của bạn vừa được thay đổi"*, có **khối cảnh báo viền hổ phách**, nhắc dùng Quên mật khẩu nếu không phải mình làm | ☐ |
 | F-11 | Gọi `GET /accounts/me` bằng token cũ sau F-9 | **401** — kể cả thiết bị vừa đổi cũng bị đá | ☐ |
@@ -542,6 +541,12 @@ còn phiên nào để đá. `lockedUntil` chỉ có nghĩa với `LOCKED`; chuy
 nó bị xoá — giữ lại là dữ liệu rác, và nguy hiểm hơn: lần khoá sau có thể tự mở vì dính mốc cũ.
 `lockedUntil` phải là **thời điểm trong tương lai** (`@Future`); để trống = khoá vô thời hạn.
 
+🔴 **Khoá tạm tự hết hạn, nhưng cột `status` thì KHÔNG BAO GIỜ được ghi lại về `ACTIVE`.** Không
+có tác vụ nền nào dọn, mốc `lockedUntil` chỉ được đọc và diễn giải mỗi lần dùng. Hệ quả:
+`GET /accounts/{id}` của một tài khoản đã hết hạn khoá **vẫn hiện `status: LOCKED`** dù họ đăng
+nhập bình thường. Màn quản trị phải tự so `lockedUntil` với hiện tại mới hiện đúng, đừng chỉ
+nhìn `status`.
+
 **Xoá tài khoản**: hỏi `OrderService` xem còn đơn hàng không (hỏi qua service chứ không tiêm
 `OrderRepository` — dữ liệu module nào module đó giữ), còn đơn ⇒ 409 với lý do thật thay vì để
 database ném ra một câu "Data integrity violation" chung chung. Rồi thu hồi phiên → xoá hồ sơ →
@@ -559,8 +564,8 @@ xoá tài khoản.
 | H-1 | `POST /accounts` `{"email":"staff@gmail.com","password":"Staff@123","roleId":"<id USER>"}` | **201** `"Account created successfully"`, đồng thời **tự dựng hồ sơ rỗng** | ☐ |
 | H-2 | `GET /accounts?page=0&size=20` | **200**, có `totalElements`/`totalPages`; bật `show-sql` thấy **1 câu SELECT** cho cả trang, không phải 1 + N | ☐ |
 | H-3 | `GET /accounts/{id}` | **200** | ☐ |
-| H-4 | `PATCH /accounts/{id-chính-mình}` `{"email":"khac@gmail.com"}` | **409** `"Use PATCH /accounts/me to change your own email"` | ☐ |
-| H-5 | Ngay sau H-4: `PATCH /accounts/me` với `currentPassword` đúng, cùng email đó | **200** — đường chính vẫn thông, chốt H-4 không chặn nhầm | ☐ |
+| H-4 | `PATCH /accounts/{id-chính-mình}` `{"email":"khac@gmail.com"}` | **409** `"Use POST /accounts/me/email/request to change your own email"` | ☐ |
+| H-5 | Ngay sau H-4: `POST /accounts/me/email/request` với `currentPassword` đúng, cùng email đó | **200** — đường chính vẫn thông, chốt H-4 không chặn nhầm | ☐ |
 | H-6 | `PATCH /accounts/{id-chính-mình}` `{"roleId":"<id USER>"}` | **409** `"You cannot change the role of your own account"` | ☐ |
 | H-7 | `PATCH /accounts/{id-chính-mình}/status` `{"status":"LOCKED"}` | **409** `"You cannot change the status of your own account"` | ☐ |
 | H-8 | `DELETE /accounts/{id-chính-mình}` | **409** `"You cannot delete your own account"` | ☐ |
@@ -591,6 +596,51 @@ tiền tố `ROLE_` → quyết định 403.
   Đó là lý do mọi endpoint ghi của product/category **bắt buộc** phải có annotation riêng.
 - Filter **bỏ qua hoàn toàn `/auth/**`**: cookie `access_token` có path `/` nên trình duyệt gửi
   kèm mọi request; token hết hạn mà filter vẫn chặn thì người dùng **không thể đăng nhập lại**.
+## §L — Đổi email hai bước (18 ca)
+
+> `PATCH /accounts/me` **đã bị xoá**. Gọi vào nó phải ra **404/405**, không được ra 200.
+
+### L.1 — Đường thành công
+
+| # | Thao tác | Kết quả mong muốn | ✓ |
+|---|---|---|---|
+| L-1 | `POST /accounts/me/email/request` `{currentPassword đúng, newEmail:"hi@gmail.com"}` | **200**, body `{newEmail, expiresIn:600, resendAfter:20}` | ☐ |
+| L-2 | Mở hộp thư **hi@gmail.com** | Có mail *"Xác minh địa chỉ email mới"*, mã 6 số | ☐ |
+| L-3 | Mở hộp thư **hello@gmail.com** (địa chỉ cũ) | **KHÔNG có mail nào** ở bước này | ☐ |
+| L-4 | `GET /accounts/me` ngay sau L-1 | `email` **vẫn là hello@gmail.com** — bước 1 không đổi gì | ☐ |
+| L-5 | `POST /accounts/me/email/confirm` `{otp đúng}` | **200**, `email` = `hi@gmail.com` | ☐ |
+| L-6 | Gọi lại `GET /accounts/me` bằng token cũ | **401** — mọi phiên đã bị thu hồi | ☐ |
+| L-7 | Đăng nhập bằng `hi@gmail.com` + mật khẩu cũ | **200** | ☐ |
+| L-8 | Đăng nhập bằng `hello@gmail.com` | **401** | ☐ |
+| L-9 | Hộp thư **hello@gmail.com** | Có mail *"Email đăng nhập của bạn vừa được thay đổi"* | ☐ |
+| L-10 | `GET /orders/me` sau khi đăng nhập lại | **Đơn hàng cũ còn nguyên** | ☐ |
+
+### L.2 — Đường lỗi
+
+| # | Thao tác | Kết quả mong muốn | ✓ |
+|---|---|---|---|
+| L-11 | Bước 1 với mật khẩu **sai** | **401** `"Current password is incorrect"`, không mail | ☐ |
+| L-12 | Bước 1 với email **người khác đang dùng** | **409** `"Account email already exists"` | ☐ |
+| L-13 | Bước 1 với **chính email hiện tại** | **409** `"The new email is the same as the current one"` | ☐ |
+| L-14 | Bước 1 hai lần liên tiếp trong 20 giây | **429** `"Please wait N more seconds"` — **báo rõ, không im lặng** như forgot-password | ☐ |
+| L-15 | Bước 1 **6 lần** trong một giờ | **429** `"Too many verification codes requested"` | ☐ |
+| L-16 | Bước 2 khi **chưa** gọi bước 1 | **400** `"There is no pending email change"` | ☐ |
+| L-17 | Bước 2 với mã **sai 5 lần** | **429**, và yêu cầu **bị huỷ** ⇒ L-16 lặp lại phải ra 400 | ☐ |
+| L-18 | Gọi `PATCH /accounts/me` | **404** hoặc **405** — endpoint đã bị xoá | ☐ |
+
+### L.3 — Ca khó, nên thử nếu có thời gian
+
+**Lách trần gửi bằng cách đổi địa chỉ mỗi lần.** Gọi bước 1 sáu lần, **mỗi lần một `newEmail`
+khác nhau**. Mong đợi: vẫn **429** từ lần thứ 6.
+🔴 Sai nếu gửi được cả 6 — nghĩa là khoá đếm đang cắm theo email mới thay vì theo tài khoản,
+và server thành máy dội mail vào hộp thư người lạ.
+
+**Người khác cướp địa chỉ giữa chừng.** Gọi bước 1 với `hi@gmail.com` → chưa xác nhận vội →
+đăng ký một tài khoản mới bằng đúng `hi@gmail.com` → quay lại gọi bước 2 với mã đúng.
+Mong đợi: **409**, email **không** bị đổi.
+
+---
+
 - Tổng **21 guard ADMIN**: `/accounts` 6 · `/roles` 5 · `/products` 3 · `/categories` 3 ·
   `/orders` 3 · `/profiles` 1.
 
@@ -708,7 +758,7 @@ Loại lỗi đắt nhất vì **không ném ra lỗi nào** — chỉ "tự dư
 | v | Endpoint mới `POST /auth/google {idToken}` |
 | w | `POST /auth/register` **không còn trả token**, trả **200** `{registrationId, email, expiresIn, resendAfter}` — FE phải chèn màn hình nhập mã |
 | x | `POST /auth/verify-registration` nhận `{registrationId, otp}` — **bỏ hẳn `email`**. Bấm "gửi lại mã" trả về `registrationId` **mới**, FE phải ghi đè giá trị cũ |
-| y | `PATCH /accounts/me` **bắt buộc** thêm `currentPassword` |
+| y | ~~`PATCH /accounts/me`~~ **đã XOÁ** — đổi email nay là hai bước `POST /accounts/me/email/request` → `/confirm`, có OTP gửi tới địa chỉ mới (§L) |
 
 ## K.4 — Checklist trước khi deploy
 

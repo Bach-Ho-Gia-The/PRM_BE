@@ -8,5 +8,7 @@ public enum OtpPurpose {
     /** Khôi phục mật khẩu cho tài khoản đã tồn tại. */
     RESET,
     /** Xác minh email trước khi tài khoản được tạo. */
-    REGISTER
+    REGISTER,
+    /** Xác minh ĐỊA CHỈ MỚI trước khi dời email của một tài khoản đang dùng. */
+    CHANGE_EMAIL
 }

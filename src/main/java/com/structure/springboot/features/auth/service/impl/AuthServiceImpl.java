@@ -7,7 +7,6 @@ import com.structure.springboot.common.security.JwtService;
 import com.structure.springboot.common.security.RefreshTokenRedis;
 import com.structure.springboot.features.account.dto.request.AccountRegistrationRequest;
 import com.structure.springboot.features.account.entity.AccountEntity;
-import com.structure.springboot.features.account.enums.AccountStatus;
 import com.structure.springboot.features.account.service.AccountService;
 import com.structure.springboot.features.account.repository.AccountRepository;
 import com.structure.springboot.common.security.OtpProperties;
@@ -308,8 +307,10 @@ public class AuthServiceImpl implements AuthService {
     public void forgotPassword(ForgotPasswordRequest request) {
         // Tài khoản không tồn tại, hoặc đang DISABLED/LOCKED -> im lặng kết thúc. Controller vẫn
         // trả cùng một câu trả lời nên người ngoài không phân biệt được hai trường hợp.
+        // Dùng isLoginAllowed() chứ không so status: khoá tạm hết hạn vẫn nằm ở LOCKED trong DB,
+        // so status thẳng là chặn nhầm người đã được tự mở khoá.
         accountRepository.findByEmailIgnoreCase(request.email())
-                .filter(account -> account.getStatus() == null || account.getStatus() == AccountStatus.ACTIVE)
+                .filter(AccountEntity::isLoginAllowed)
                 .ifPresent(account -> issueOtp(account.getEmail()));
     }
 

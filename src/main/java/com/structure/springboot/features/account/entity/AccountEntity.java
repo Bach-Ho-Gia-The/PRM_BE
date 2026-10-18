@@ -66,6 +66,31 @@ public class AccountEntity extends BaseEntity {
     @Column(name = "locked_until")
     private Instant lockedUntil;
 
+    /**
+     * Tài khoản này còn được phép đăng nhập / khôi phục mật khẩu không.
+     *
+     * <p><b>Vì sao không kiểm {@code status == ACTIVE} là xong:</b> khoá tạm TỰ HẾT HẠN theo
+     * {@code lockedUntil}, nhưng cột {@code status} thì KHÔNG có ai ghi lại về ACTIVE — nó nằm
+     * nguyên ở LOCKED mãi mãi. Chỗ nào chỉ so {@code status} sẽ chặn nhầm người đã hết hạn khoá:
+     * họ đăng nhập được (vì {@code AccountPrincipal} có đọc {@code lockedUntil}) nhưng lại không
+     * dùng được chức năng quên mật khẩu.</p>
+     *
+     * <p>{@code status} null là dữ liệu cũ chưa có cột này ⇒ coi như ACTIVE, giống
+     * {@code ProductEntity.isVisible()}.</p>
+     *
+     * <p>Cùng một luật với cặp cờ {@code isEnabled()} + {@code isAccountNonLocked()} của
+     * {@code AccountPrincipal}; bên đó buộc phải tách đôi vì đó là giao kèo của {@code UserDetails}.</p>
+     */
+    public boolean isLoginAllowed() {
+        if (status == AccountStatus.DISABLED) {
+            return false;
+        }
+        if (status == AccountStatus.LOCKED) {
+            return lockedUntil != null && !lockedUntil.isAfter(Instant.now());
+        }
+        return true;
+    }
+
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "role_id", nullable = false)
     private RoleEntity role;

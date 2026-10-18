@@ -3,6 +3,7 @@ package com.structure.springboot.features.account.mapper;
 import com.structure.springboot.features.account.dto.request.AccountRequest;
 import com.structure.springboot.features.account.dto.request.AccountUpdateRequest;
 import com.structure.springboot.features.account.dto.response.AccountResponse;
+import com.structure.springboot.features.account.dto.response.EmailChangePendingResponse;
 import com.structure.springboot.features.account.entity.AccountEntity;
 import org.mapstruct.BeanMapping;
 import org.mapstruct.Mapper;
@@ -26,6 +27,9 @@ public interface AccountMapper {
     @Mapping(target = "createdAt", ignore = true)
     @Mapping(target = "updatedAt", ignore = true)
     AccountEntity toEntity(AccountRequest request);
+
+    /** Ba tham số vô hướng ghép thành record — MapStruct khớp theo TÊN tham số, không cần @Mapping. */
+    EmailChangePendingResponse toEmailChangePendingResponse(String newEmail, long expiresIn, long resendAfter);
 
     /**
      * MapStruct bỏ qua mọi field null của request ({@code NullValuePropertyMappingStrategy.IGNORE})

@@ -4,10 +4,14 @@ import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.security.RefreshTokenRedis;
 import com.structure.springboot.features.account.dto.request.AccountRequest;
-import com.structure.springboot.features.account.dto.request.AccountSelfUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountStatusUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountUpdateRequest;
 import com.structure.springboot.features.account.dto.request.ChangePasswordRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeConfirmRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeRequest;
+import com.structure.springboot.features.account.dto.response.EmailChangePendingResponse;
+import com.structure.springboot.features.account.security.EmailChangeOtp;
+import com.structure.springboot.common.security.OtpProperties;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.account.dto.response.AccountResponse;
 import com.structure.springboot.features.account.entity.AccountEntity;
@@ -27,7 +31,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -44,6 +52,8 @@ public class AccountServiceImpl implements AccountService {
     private final OrderService orderService;
     private final PasswordChangeGuard passwordChangeGuard;
     private final BrevoMailClient brevoMailClient;
+    private final EmailChangeOtp emailChangeOtp;
+    private final OtpProperties otpProperties;
 
     @Override
     @Transactional
@@ -66,17 +76,112 @@ public class AccountServiceImpl implements AccountService {
         return accountMapper.toResponse(saved);
     }
 
+    /**
+     * KHÔNG gắn {@code @Transactional}, cố ý — giống hệt {@code forgotPassword} bên
+     * {@code AuthServiceImpl}.
+     *
+     * <p>Thân hàm có một lời gọi HTTP sang Brevo. Bọc giao dịch vào là giữ nguyên một connection
+     * của pool suốt thời gian chờ mạng; vài request đồng thời là pool cạn, kéo sập cả những
+     * endpoint chẳng liên quan. Hàm chỉ đọc hai cột vô hướng {@code email} và {@code password}
+     * nên không cần phiên Hibernate sống tới cuối.</p>
+     */
     @Override
-    @Transactional
-    public AccountResponse updateMyAccount(UUID accountId, AccountSelfUpdateRequest request) {
+    public EmailChangePendingResponse requestEmailChange(UUID accountId, EmailChangeRequest request) {
         AccountEntity entity = accountRepository.findById(accountId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Account not found with id: " + accountId));
 
+        // Chặn khoảng chờ TRƯỚC khi so BCrypt, cùng lý do với changePassword: để sau thì chính
+        // chốt chống spam lại thành chỗ đốt CPU.
+        emailChangeOtp.assertCanSend(accountId);
+
         requireCurrentPassword(entity, request.currentPassword());
 
-        // Đi thẳng vào phần thân chung, KHÔNG qua updateAccount: ba chốt "tự sửa" của đường
-        // admin ở đó sẽ chặn nhầm chính đường này. roleId truyền null nên quyền không thể đổi.
-        return applyAccountUpdate(entity, new AccountUpdateRequest(request.email(), null));
+        String newEmail = request.newEmail().trim().toLowerCase(Locale.ROOT);
+        if (newEmail.equalsIgnoreCase(entity.getEmail())) {
+            throw new ApiException(ErrorCode.CONFLICT, "The new email is the same as the current one");
+        }
+        requireEmailAvailable(newEmail, accountId);
+
+        // Dùng registerTtlSeconds (10 phút) chứ không phải ttlSeconds (90 giây) của luồng quên
+        // mật khẩu: cùng kiểu thao tác với đăng ký — phải rời app, mở hộp thư, chờ mail rồi mới
+        // quay lại gõ. 90 giây cho chuỗi đó là quá gắt.
+        Duration ttl = Duration.ofSeconds(otpProperties.registerTtlSeconds());
+        String code = emailChangeOtp.issueCode(accountId, ttl);
+        emailChangeOtp.storePending(accountId, newEmail, ttl);
+
+        // KHÔNG nuốt lỗi gửi mail như issueOtp của luồng quên mật khẩu: ở đó phải nuốt để email
+        // có thật và email bịa trả về giống nhau, còn ở đây người gọi đã đăng nhập nên không có
+        // gì để dò. Brevo hỏng thì trả 502 để họ biết mà bấm lại.
+        brevoMailClient.sendEmailChangeOtpEmail(newEmail, code, (int) ttl.toSeconds());
+
+        // Bật khoảng chờ SAU khi mail đi thành công, theo đúng tiền lệ issueOtp.
+        emailChangeOtp.startCooldown(accountId, Duration.ofSeconds(otpProperties.resendCooldownSeconds()));
+
+        return accountMapper.toEmailChangePendingResponse(newEmail, ttl.toSeconds(),
+                otpProperties.resendCooldownSeconds());
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse confirmEmailChange(UUID accountId, EmailChangeConfirmRequest request) {
+        AccountEntity entity = accountRepository.findById(accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Account not found with id: " + accountId));
+
+        String newEmail = emailChangeOtp.findPending(accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.BAD_REQUEST,
+                        "There is no pending email change. Please start again."));
+
+        emailChangeOtp.requireValidCode(accountId, request.otp(),
+                Duration.ofSeconds(otpProperties.registerTtlSeconds()));
+
+        // Kiểm LẠI lần hai: giữa bước xin mã và bước này có cả chục phút, thừa đủ để người khác
+        // đăng ký đúng địa chỉ đó. Tin vào lần kiểm ở bước 1 là đâm thẳng vào ràng buộc unique.
+        requireEmailAvailable(newEmail, accountId);
+
+        String previousEmail = entity.getEmail();
+        entity.setEmail(newEmail);
+        AccountEntity saved = accountRepository.save(entity);
+
+        emailChangeOtp.clearPending(accountId);
+
+        // Thu hồi theo email CŨ: mốc đăng xuất cắm theo email, mà access token đang lưu hành
+        // mang email cũ trong claim "sub". Cắm theo email mới thì token cũ lọt lưới.
+        refreshTokenRedis.revokeEverySession(saved.getId().toString(), previousEmail);
+
+        sendEmailChangedAfterCommit(previousEmail, newEmail);
+
+        return accountMapper.toResponse(saved);
+    }
+
+    /**
+     * Mail báo tin phải đi SAU khi giao dịch commit.
+     *
+     * <p>{@code @Async} chỉ ném lời gọi sang luồng khác, KHÔNG có nghĩa là sau commit: gọi thẳng
+     * trong thân {@code @Transactional} thì mail "email của bạn vừa bị đổi" có thể bay đi trước,
+     * rồi giao dịch rollback — người dùng hoảng vì một việc chưa hề xảy ra.</p>
+     *
+     * <p>Đăng ký ở đây chứ không trong {@code BrevoMailClient} vì {@code @Async} đi qua proxy:
+     * gọi từ bên trong chính bean đó thì proxy bị bỏ qua và mail chạy đồng bộ, chặn response.</p>
+     */
+    private void sendEmailChangedAfterCommit(String previousEmail, String newEmail) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            // Không nằm trong giao dịch nào (chỉ xảy ra ở unit test): gửi luôn.
+            brevoMailClient.sendEmailChangedEmail(previousEmail, newEmail);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                brevoMailClient.sendEmailChangedEmail(previousEmail, newEmail);
+            }
+        });
+    }
+
+    /** Dùng ở cả hai bước của luồng đổi email, nên tách ra thay vì chép điều kiện hai lần. */
+    private void requireEmailAvailable(String email, UUID accountId) {
+        if (accountRepository.existsByEmailIgnoreCaseAndIdNot(email, accountId)) {
+            throw new ApiException(ErrorCode.CONFLICT, "Account email already exists: " + email);
+        }
     }
 
     /**
@@ -182,7 +287,7 @@ public class AccountServiceImpl implements AccountService {
             // có thể gọi /accounts/{id} với id của chính mình và đi cửa sau.
             if (isEmailChanging(request.email(), entity.getEmail())) {
                 throw new ApiException(ErrorCode.CONFLICT,
-                        "Use PATCH /accounts/me to change your own email");
+                        "Use POST /accounts/me/email/request to change your own email");
             }
 
             // Admin tự hạ vai trò mình xuống USER là tự tước quyền của chính mình, và nếu đó là
@@ -345,8 +450,9 @@ public class AccountServiceImpl implements AccountService {
 
         // Vé đổi mật khẩu sống 300 giây, đủ dài để admin kịp khoá tài khoản trong lúc đó. Không
         // chốt lại ở đây thì người vừa bị khoá vẫn đổi được mật khẩu bằng vé xin từ trước.
-        // Chỉ kiểm status: lockedUntil là mốc tự mở của LOCKED, mà LOCKED đã bị chặn sẵn rồi.
-        if (entity.getStatus() != null && entity.getStatus() != AccountStatus.ACTIVE) {
+        // isLoginAllowed() đọc cả lockedUntil: khoá tạm đã hết hạn thì cho qua, vì cột status
+        // không bao giờ được ghi lại về ACTIVE nên so status thẳng là chặn nhầm vĩnh viễn.
+        if (!entity.isLoginAllowed()) {
             throw new ApiException(ErrorCode.FORBIDDEN, "This account is not allowed to reset its password");
         }
 

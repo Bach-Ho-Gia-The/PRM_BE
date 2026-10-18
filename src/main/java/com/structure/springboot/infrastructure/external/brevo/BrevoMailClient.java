@@ -84,6 +84,48 @@ public class BrevoMailClient {
      * đây; để nó bay lên thì chỉ tạo ra một stacktrace vô chủ chứ không giúp được gì.</p>
      */
     @Async
+    /**
+     * Mã xác minh gửi tới ĐỊA CHỈ MỚI khi người dùng xin đổi email.
+     *
+     * <p>Cùng nhóm "mail chặn luồng" với {@link #sendOtpEmail}: gửi hỏng thì ném lên để người
+     * dùng biết mà bấm lại, chứ không nuốt — họ đã đăng nhập rồi nên không có nguy cơ dò email
+     * như endpoint quên mật khẩu.</p>
+     */
+    public void sendEmailChangeOtpEmail(String toEmail, String otp, int ttlSeconds) {
+        send(toEmail, "Xác minh địa chỉ email mới", layout(
+                "Xác minh email mới",
+                "Có yêu cầu chuyển tài khoản sang chính địa chỉ này. "
+                        + "Nhập mã bên dưới trong ứng dụng để hoàn tất.",
+                codeBlock(otp),
+                "Mã có hiệu lực trong " + ttlSeconds + " giây.",
+                "Nếu bạn không yêu cầu, hãy bỏ qua email này — tài khoản sẽ KHÔNG bị chuyển "
+                        + "sang địa chỉ này."));
+    }
+
+    /**
+     * Báo về ĐỊA CHỈ CŨ sau khi email đã đổi xong.
+     *
+     * <p>Cùng nhóm "mail báo tin" với {@link #sendPasswordChangedEmail}: {@code @Async} + nuốt
+     * lỗi. Đây là tín hiệu duy nhất tới hộp thư cũ, vì từ giây này hộp thư đó không còn nhận
+     * được gì từ hệ thống nữa.</p>
+     */
+    @Async
+    public void sendEmailChangedEmail(String previousEmail, String newEmail) {
+        try {
+            send(previousEmail, "Email đăng nhập của bạn vừa được thay đổi", layout(
+                    "Email đăng nhập đã thay đổi",
+                    "Tài khoản trước đây dùng địa chỉ " + previousEmail
+                            + " nay đã chuyển sang " + newEmail + ".",
+                    noticeBlock("Địa chỉ này không còn đăng nhập được nữa. "
+                            + "Mọi thiết bị đang đăng nhập cũng đã bị đăng xuất."),
+                    "Nếu chính bạn vừa thực hiện thao tác này, bạn không cần làm gì thêm.",
+                    "Nếu KHÔNG phải bạn, hãy liên hệ cửa hàng ngay — thao tác này đòi hỏi mật "
+                            + "khẩu hiện tại của bạn, nên rất có thể mật khẩu đã bị lộ."));
+        } catch (RuntimeException ignored) {
+            // Xem javadoc: mail báo tin không được phép làm hỏng nghiệp vụ đã hoàn tất.
+        }
+    }
+
     public void sendPasswordChangedEmail(String toEmail) {
         try {
             send(toEmail, "Mật khẩu của bạn vừa được thay đổi", layout(

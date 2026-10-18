@@ -4,10 +4,12 @@ import com.structure.springboot.common.response.ApiResponse;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.security.AuthenticatedUser;
 import com.structure.springboot.features.account.dto.request.AccountRequest;
-import com.structure.springboot.features.account.dto.request.AccountSelfUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountStatusUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountUpdateRequest;
 import com.structure.springboot.features.account.dto.request.ChangePasswordRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeConfirmRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeRequest;
+import com.structure.springboot.features.account.dto.response.EmailChangePendingResponse;
 import com.structure.springboot.features.account.dto.response.AccountResponse;
 import com.structure.springboot.features.account.service.AccountService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -100,25 +102,52 @@ public class AccountController {
     }
 
     /**
-     * Người dùng tự sửa email của CHÍNH MÌNH (phải gõ lại mật khẩu hiện tại để xác minh).
+     * Bước 1 đổi email: gõ mật khẩu hiện tại + địa chỉ mới, hệ thống gửi mã 6 số tới ĐỊA CHỈ MỚI.
      *
-     * <p>Dùng {@code AccountSelfUpdateRequest} thay vì {@code AccountUpdateRequest} vì bản kia có
-     * {@code roleId} — để lọt vào đây là ai cũng tự nâng mình lên ADMIN được.</p>
-     *
-     * <p><b>Đổi email thì mọi phiên bị thu hồi</b>, kể cả phiên vừa gọi API này: mốc đăng xuất
-     * được cắm theo email, giữ phiên cũ lại là giữ luôn một token không còn đối chiếu được.</p>
+     * <p><b>Chưa đổi gì cả ở bước này.</b> Mật khẩu chỉ chứng minh "đúng người đang ngồi đây";
+     * phải sang bước 2 nhập đúng mã mới chứng minh được "hộp thư đó là của bạn". Gộp làm một
+     * bước thì gõ nhầm một chữ là mất tài khoản vĩnh viễn — email là thứ dùng để đăng nhập và
+     * cũng là nơi nhận mã khôi phục.</p>
      */
-    @PatchMapping("/me")
-    public ResponseEntity<ApiResponse<AccountResponse>> updateMyAccount(
+    @PostMapping("/me/email/request")
+    public ResponseEntity<ApiResponse<EmailChangePendingResponse>> requestEmailChange(
             @AuthenticationPrincipal AuthenticatedUser currentUser,
-            @Valid @RequestBody AccountSelfUpdateRequest requestDTO,
+            @Valid @RequestBody EmailChangeRequest requestDTO,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<EmailChangePendingResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Verification code sent to the new email address")
+                        .result(accountService.requestEmailChange(
+                                AuthenticatedUser.requireId(currentUser), requestDTO))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /**
+     * Bước 2 đổi email: nhập mã vừa nhận ở địa chỉ mới.
+     *
+     * <p><b>Thành công thì mọi phiên bị thu hồi</b>, kể cả phiên vừa gọi API này: mốc đăng xuất
+     * cắm theo email, giữ phiên cũ lại là giữ luôn một token không còn đối chiếu được. Client
+     * phải xoá token đang giữ và cho đăng nhập lại bằng email mới.</p>
+     *
+     * <p>Đơn hàng, thông báo, hội thoại, hồ sơ đi theo tài khoản mà không phải dời gì — tất cả
+     * đều móc vào {@code account_id}, không móc vào email.</p>
+     */
+    @PostMapping("/me/email/confirm")
+    public ResponseEntity<ApiResponse<AccountResponse>> confirmEmailChange(
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            @Valid @RequestBody EmailChangeConfirmRequest requestDTO,
             HttpServletRequest request) {
 
         return ResponseEntity.ok(
                 ApiResponse.<AccountResponse>builder()
                         .code(HttpStatus.OK.value())
-                        .message("Account updated successfully")
-                        .result(accountService.updateMyAccount(AuthenticatedUser.requireId(currentUser), requestDTO))
+                        .message("Email changed successfully. Please sign in again.")
+                        .result(accountService.confirmEmailChange(
+                                AuthenticatedUser.requireId(currentUser), requestDTO))
                         .path(request.getRequestURI())
                         .build()
         );

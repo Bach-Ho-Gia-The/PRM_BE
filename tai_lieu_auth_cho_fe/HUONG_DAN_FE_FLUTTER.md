@@ -110,7 +110,8 @@ class ApiResponse<T> {
 | Endpoint | App mobile dùng? | Ghi chú |
 |---|---|---|
 | `GET /accounts/me` | ✅ | Lấy email, `provider`, `hasPassword` |
-| `PATCH /accounts/me` | ✅ | Đổi email |
+| `POST /accounts/me/email/request` | ✅ | Đổi email — bước 1 (xem §9) |
+| `POST /accounts/me/email/confirm` | ✅ | Đổi email — bước 2 (xem §9) |
 | `PATCH /accounts/me/password` | ✅ | Đổi mật khẩu |
 | `GET /profiles/me` | ✅ | Màn hồ sơ |
 | `PATCH /profiles/me` | ✅ | Sửa hồ sơ |
@@ -835,25 +836,10 @@ if (!account.hasPassword) {
 // account.provider: "LOCAL" | "GOOGLE" — hiện huy hiệu "Đã liên kết Google"
 ```
 
-## 8.2 — `PATCH /accounts/me` — đổi email
+## 8.2 — Đổi email
 
-```jsonc
-// Request  🔴 currentPassword LÀ BẮT BUỘC, luôn luôn
-{ "email": "moi@example.com", "currentPassword": "Abc@12345" }
-```
-
-Trả 200 + `AccountResponse` mới, `message` = `"Account updated successfully"`.
-
-| HTTP | `message` | App làm gì |
-|---|---|---|
-| 400 | `"Current password is required"` | Thiếu field — bug client |
-| 401 | `"Current password is incorrect"` | "Mật khẩu không đúng" |
-| 409 | `"Account email already exists: moi@example.com"` | "Email này đã có người dùng" |
-| 409 | `"This account has no password yet. Use the forgot-password flow to set one."` | Tài khoản Google thuần ⇒ dẫn sang §5.5 |
-
-🔴 **Đổi email thành công = thu hồi mọi phiên.** Xoá token, về Đăng nhập, báo rõ
-*"Email đã đổi, vui lòng đăng nhập lại bằng email mới."* Người dùng không được báo trước sẽ
-tưởng app lỗi.
+> ⚠️ `PATCH /accounts/me` **đã bị xoá từ 18/10/2026.** Đổi email nay là luồng **hai bước** có
+> xác minh OTP gửi tới địa chỉ mới — **xem §9** để có đầy đủ request, response và bảng lỗi.
 
 ## 8.3 — `PATCH /accounts/me/password` — đổi mật khẩu
 
@@ -939,7 +925,7 @@ Các trường hợp **không phải lỗi app**, đừng cố xử lý ở clie
 
 ---
 
-*Backend tham chiếu: `TEST_AUTH_SWAGGER.md` (159 ca nghiệm thu) · `GHI_NHO_DU_AN.md` (quyết định + việc còn nợ).*
+*Backend tham chiếu: `TEST_AUTH_SWAGGER.md` (174 ca nghiệm thu) · `GHI_NHO_DU_AN.md` (quyết định + việc còn nợ).*
 
 ---
 
@@ -975,3 +961,77 @@ Các trường hợp **không phải lỗi app**, đừng cố xử lý ở clie
 
 🔴 **Đừng xoá vai `USER`** — `/auth/verify-registration` tra vai này theo tên để gán cho tài khoản
 mới; mất nó là **không ai đăng ký được nữa** (xem `TEST_AUTH_SWAGGER.md` ca J-9b).
+
+---
+
+## 9 — Đổi email: HAI bước, không phải một
+
+> Cập nhật 18/10/2026. **`PATCH /accounts/me` đã bị XOÁ.** Trước đây nó đổi email chỉ với mật
+> khẩu, không xác minh địa chỉ mới — gõ nhầm một chữ là mất tài khoản vĩnh viễn, và ai mượn
+> được máy đang đăng nhập cũng dời được địa chỉ khôi phục đi chỗ khác.
+
+### 9.1 — Bước 1: xin mã
+
+```json
+POST /accounts/me/email/request
+{ "currentPassword": "Mật@Khẩu123", "newEmail": "hi@gmail.com" }
+```
+→ `200`
+```json
+{ "newEmail": "hi@gmail.com", "expiresIn": 600, "resendAfter": 20 }
+```
+
+Mã 6 số bay tới **`hi@gmail.com`** — địa chỉ MỚI, không phải địa chỉ đang dùng.
+
+- `expiresIn` **600 giây** — dài hơn hẳn mã quên mật khẩu (90s) vì khách phải rời app, mở hộp
+  thư, rồi quay lại gõ. Dùng nó dựng đồng hồ đếm ngược, **đừng hardcode**.
+- `resendAfter` **20 giây** — khoá nút "Gửi lại" đúng chừng đó.
+- 🔴 **Bước này KHÔNG đổi gì trong hệ thống.** Email cũ vẫn dùng được, phiên đăng nhập vẫn còn.
+  Gõ nhầm địa chỉ thì chỉ đơn giản là không có mã nào tới — quay lại sửa rồi xin mã khác.
+
+### 9.2 — Bước 2: xác nhận
+
+```json
+POST /accounts/me/email/confirm
+{ "otp": "123456" }
+```
+→ `200` + `AccountResponse` với `email` đã là địa chỉ mới.
+
+🔴 **Ngay sau call này mọi phiên bị thu hồi, kể cả phiên vừa gọi.** App phải:
+1. Xoá token/cookie đang giữ
+2. Đá về màn đăng nhập
+3. **Điền sẵn địa chỉ MỚI** vào ô email cho khách đỡ bỡ ngỡ
+
+Không làm vậy thì request kế tiếp nhận `401` không rõ nguyên nhân.
+
+### 9.3 — Dữ liệu cũ đi đâu?
+
+**Ở nguyên chỗ cũ, không mất gì.** Đơn hàng, thông báo, hội thoại, hồ sơ đều móc vào
+`account_id` chứ không móc vào email. Đổi email chỉ là sửa một ô trong bảng `accounts`.
+
+> Riêng đơn hàng cũ vẫn giữ `hello@gmail.com` ở ô email liên hệ của đơn — **đúng**, vì hoá đơn
+> phải giữ nguyên thông tin lúc mua, y như nó giữ nguyên giá cũ và tên sản phẩm cũ.
+
+### 9.4 — Bảng lỗi
+
+| Mã | Khi nào |
+|---|---|
+| `401` `Current password is incorrect` | sai mật khẩu hiện tại |
+| `409` `This account has no password yet…` | tài khoản Google chưa đặt mật khẩu — bảo họ dùng "Quên mật khẩu" đặt mật khẩu trước |
+| `409` `The new email is the same as the current one` | gõ lại chính địa chỉ đang dùng |
+| `409` `Account email already exists: …` | người khác đã dùng địa chỉ đó |
+| `429` `Please wait N more seconds…` | bấm "Gửi lại" quá sớm |
+| `429` `Too many verification codes requested…` | quá 5 lần trong một giờ |
+| `400` `There is no pending email change…` | bấm xác nhận mà chưa xin mã, hoặc đã quá 10 phút |
+| `400` `Incorrect verification code` | gõ sai mã |
+| `400` `The verification code has expired…` | quá 10 phút |
+| `429` `Too many incorrect attempts…` | sai 5 lần ⇒ **huỷ cả yêu cầu**, phải làm lại từ bước 1 |
+| `502` | Brevo gửi mail hỏng — cho bấm thử lại |
+
+> ⚠️ `409 Account email already exists` **có thể nổ ở bước 2** chứ không chỉ bước 1: giữa hai
+> bước có tới 10 phút, đủ để người khác đăng ký đúng địa chỉ đó.
+
+### 9.5 — Hạn mức Brevo
+
+Mỗi lần đổi tốn **2 mail** (mã gửi địa chỉ mới + thư báo gửi địa chỉ cũ), ăn chung hạn mức
+**300 mail/ngày** với OTP đăng ký và mail đơn hàng.

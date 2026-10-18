@@ -1,10 +1,12 @@
 package com.structure.springboot.features.account.service;
 
 import com.structure.springboot.features.account.dto.request.AccountRequest;
-import com.structure.springboot.features.account.dto.request.AccountSelfUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountStatusUpdateRequest;
 import com.structure.springboot.features.account.dto.request.AccountUpdateRequest;
 import com.structure.springboot.features.account.dto.request.ChangePasswordRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeConfirmRequest;
+import com.structure.springboot.features.account.dto.request.EmailChangeRequest;
+import com.structure.springboot.features.account.dto.response.EmailChangePendingResponse;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.account.dto.response.AccountResponse;
 
@@ -39,7 +41,21 @@ public interface AccountService {
      * Người dùng tự sửa email của chính mình. Tách khỏi {@code updateAccount} vì bản
      * admin cho phép đổi cả {@code roleId}.
      */
-    AccountResponse updateMyAccount(UUID accountId, AccountSelfUpdateRequest request);
+    /**
+     * Bước 1 đổi email: kiểm mật khẩu hiện tại rồi gửi mã xác minh tới ĐỊA CHỈ MỚI.
+     *
+     * <p>Chưa ghi gì vào database. Người dùng gõ nhầm địa chỉ thì chỉ đơn giản là không nhận
+     * được mã, tài khoản vẫn nguyên và phiên đăng nhập vẫn còn.</p>
+     */
+    EmailChangePendingResponse requestEmailChange(UUID accountId, EmailChangeRequest request);
+
+    /**
+     * Bước 2 đổi email: nhập đúng mã thì email mới có hiệu lực.
+     *
+     * <p>Đơn hàng, thông báo, hội thoại, hồ sơ đều móc vào {@code account_id} nên đi theo tài
+     * khoản mà không phải dời gì. Mọi phiên bị thu hồi, người dùng đăng nhập lại bằng email mới.</p>
+     */
+    AccountResponse confirmEmailChange(UUID accountId, EmailChangeConfirmRequest request);
     void deleteAccount(UUID id, UUID actorId);
 
     /**
