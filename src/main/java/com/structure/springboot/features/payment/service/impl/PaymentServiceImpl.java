@@ -54,7 +54,7 @@ public class PaymentServiceImpl implements PaymentService {
     public VnpayPaymentUrlResponse startVnpayPayment(UUID accountId, String orderNumber, String clientIp) {
         // Khoá đơn: hai request bấm "thanh toán" cùng lúc không được cùng sinh ra một lần thử mới,
         // và không được cùng đọc ra số lần thử cũ rồi đội số của nhau.
-        OrderEntity order = orderRepository.findByOrderNumberAndAccountIdForUpdate(
+        OrderEntity order = orderRepository.findForUpdateByOrderNumberAndAccountId(
                         normalizeOrderNumber(orderNumber), accountId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Order not found with number: " + orderNumber));
@@ -94,6 +94,68 @@ public class PaymentServiceImpl implements PaymentService {
                 .map(paymentMapper::toResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "This order has no payment record: " + orderNumber));
+    }
+
+    @Override
+    @Transactional
+    public void releaseForOrderCancel(OrderEntity order) {
+        closeOpenAttempt(order, PaymentStatus.CANCELLED);
+    }
+
+    @Override
+    @Transactional
+    public void expireForOrder(OrderEntity order) {
+        closeOpenAttempt(order, PaymentStatus.EXPIRED);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Instant findPaidAtForOrder(UUID orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(orderId)
+                .map(PaymentEntity::getPaidAt)
+                .orElse(null);
+    }
+
+    /**
+     * Khuôn chung cho hai đường đóng payment — <b>chỉ khác trạng thái đích</b>.
+     *
+     * <p>Tách ra vì hai hàm gọi nó phải hành xử y hệt nhau ở mọi nhánh còn lại. Nếu mỗi hàm tự
+     * viết, sớm muộn sẽ có một bản quên nhánh "PAID thì không đụng" và ghi đè mất dấu vết một giao
+     * dịch đã thu được tiền — loại lỗi không thể phát hiện bằng mắt trên dữ liệu.</p>
+     *
+     * <p><b>Vì sao chỉ xét payment mới nhất:</b> chỉ bản mới nhất mới có thể còn {@code PENDING}.
+     * Các bản cũ đã dứt điểm theo đúng luật "chỉ sinh lần thử mới khi lần trước đã thất bại". Quét
+     * toàn bộ là việc làm vô nghĩa và còn che mất dấu vết lịch sử.</p>
+     *
+     * <p>Không {@code save} khi không đổi gì: {@code @Transactional} cộng với entity đang được quản
+     * lý thì thay đổi tự được ghi ra khi commit; gọi {@code save} thừa chỉ tổ sinh thêm một câu
+     * UPDATE rỗng.</p>
+     */
+    private void closeOpenAttempt(OrderEntity order, PaymentStatus target) {
+        if (order == null || order.getId() == null) {
+            return;
+        }
+
+        Optional<PaymentEntity> lastAttempt =
+                paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId());
+
+        if (lastAttempt.isEmpty()) {
+            // Đơn tạo trước CK-2 chưa có bản ghi payment nào — không có gì để đóng.
+            return;
+        }
+
+        PaymentEntity payment = lastAttempt.get();
+
+        // PAID: tiền đã về. Ghi đè thành CANCELLED/EXPIRED là làm mất sự thật quan trọng nhất
+        // trong toàn bộ hệ thống. Phần hoàn tiền thuộc luồng khác.
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            return;
+        }
+
+        payment.setStatus(target);
     }
 
     /**

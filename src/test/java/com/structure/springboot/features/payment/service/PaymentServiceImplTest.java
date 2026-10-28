@@ -90,7 +90,7 @@ class PaymentServiceImplTest {
     }
 
     private void stubOrder(OrderEntity order) {
-        when(orders.findByOrderNumberAndAccountIdForUpdate(ORDER_NO, me)).thenReturn(Optional.of(order));
+        when(orders.findForUpdateByOrderNumberAndAccountId(ORDER_NO, me)).thenReturn(Optional.of(order));
     }
 
     private void echoSave() {
@@ -259,7 +259,7 @@ class PaymentServiceImplTest {
     /** Don cua nguoi khac la 404, khong phai 403: khong lo don do co that hay khong. */
     @Test
     void someoneElsesOrderIsNotFound() {
-        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-XXXX", me))
+        when(orders.findForUpdateByOrderNumberAndAccountId("LBVN-2610-XXXX", me))
                 .thenReturn(Optional.empty());
 
         assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
@@ -280,5 +280,115 @@ class PaymentServiceImplTest {
         assertEquals(ORDER_NO, response.orderNumber());
         assertEquals(PaymentStatus.PENDING, response.status());
         assertEquals(1, response.attemptNo());
+    }
+
+    // ───────────── dong payment khi don bi huy / het han ─────────────
+
+    /** Khach huy don: lan thu dang mo phai thanh CANCELLED, khong duoc ket PENDING. */
+    @Test
+    void releasingAPendingPaymentMarksItCancelled() {
+        OrderEntity order = payableOrder();
+        PaymentEntity pending = attempt(PaymentStatus.PENDING, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(pending));
+
+        service.releaseForOrderCancel(order);
+
+        assertEquals(PaymentStatus.CANCELLED, pending.getStatus());
+    }
+
+    /**
+     * Tien da ve thi KHONG duoc ghi de.
+     * Ghi de o day la xoa mat su that quan trong nhat trong he thong: khach da tra tien.
+     */
+    @Test
+    void releasingKeepsAPaidPaymentUntouched() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+
+        service.releaseForOrderCancel(order);
+
+        assertEquals(PaymentStatus.PAID, paid.getStatus());
+    }
+
+    /** Goi lai nhieu lan vo hai: dong roi thi khong lam gi them. */
+    @Test
+    void releasingIsIdempotent() {
+        OrderEntity order = payableOrder();
+        PaymentEntity pending = attempt(PaymentStatus.PENDING, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(pending));
+
+        service.releaseForOrderCancel(order);
+        service.releaseForOrderCancel(order);
+
+        assertEquals(PaymentStatus.CANCELLED, pending.getStatus());
+    }
+
+    /** Don khong co ban ghi payment nao (du lieu tao truoc CK-2): khong nem loi. */
+    @Test
+    void releasingAnOrderWithoutAnyPaymentDoesNothing() {
+        OrderEntity order = payableOrder();
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.empty());
+
+        service.releaseForOrderCancel(order);
+
+        verify(payments, never()).save(any());
+    }
+
+    /** Qua han thanh toan: lan thu dang mo thanh EXPIRED, khac han CANCELLED cua khach huy. */
+    @Test
+    void expiringAPendingPaymentMarksItExpired() {
+        OrderEntity order = payableOrder();
+        PaymentEntity pending = attempt(PaymentStatus.PENDING, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(pending));
+
+        service.expireForOrder(order);
+
+        assertEquals(PaymentStatus.EXPIRED, pending.getStatus());
+    }
+
+    /** Qua han nhung tien da ve trong gang tac: van khong duoc ghi de. */
+    @Test
+    void expiringKeepsAPaidPaymentUntouched() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+
+        service.expireForOrder(order);
+
+        assertEquals(PaymentStatus.PAID, paid.getStatus());
+    }
+
+    // ───────────── thoi diem da tra tien ─────────────
+
+    @Test
+    void thePaidAtTimestampIsReadableForTheOrder() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        Instant paidAt = Instant.now().minus(2, ChronoUnit.MINUTES);
+        paid.setPaidAt(paidAt);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+
+        assertEquals(paidAt, service.findPaidAtForOrder(order.getId()));
+    }
+
+    @Test
+    void anUnpaidOrderHasNoPaidAtAndAnOrderWithoutPaymentNeither() {
+        OrderEntity paidOrder = payableOrder();
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(paidOrder.getId()))
+                .thenReturn(Optional.of(attempt(PaymentStatus.PENDING, 1, paidOrder)));
+        assertNull(service.findPaidAtForOrder(paidOrder.getId()));
+
+        OrderEntity noPaymentOrder = payableOrder();
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(noPaymentOrder.getId()))
+                .thenReturn(Optional.empty());
+        assertNull(service.findPaidAtForOrder(noPaymentOrder.getId()));
     }
 }

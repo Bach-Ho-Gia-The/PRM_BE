@@ -161,7 +161,12 @@ public class OrderServiceImpl implements OrderService {
         // Gán đúng một lần, không có đường nào sửa về sau — đó là cơ chế chống tự gia hạn.
         order.setPaymentDueAt(resolvePaymentDueAt(request.paymentMethod()));
 
-        OrderEntity saved = orderRepository.save(order);
+        // saveAndFlush chứ KHÔNG phải save: @CreationTimestamp / @UpdateTimestamp chỉ được
+        // Hibernate sinh ra lúc flush. save() mới chỉ persist vào persistence context, nên map
+        // ngay sau đó sẽ trả createdAt = null và updatedAt = null — đúng lỗi từng thấy trên
+        // Swagger. Các service khác trong dự án (product, profile, collection) cũng dùng
+        // saveAndFlush vì cùng lý do; riêng order từng lệch.
+        OrderEntity saved = orderRepository.saveAndFlush(order);
 
         // Ghi nhận lần thử thanh toán đầu tiên, TRONG CÙNG giao dịch với việc tạo đơn: hoặc cả hai
         // cùng ra đời, hoặc cùng không. Tách ra ngoài thì có khoảng thời gian đơn tồn tại mà không
@@ -173,7 +178,7 @@ public class OrderServiceImpl implements OrderService {
                 StringUtils.hasText(saved.getEmail()) ? saved.getEmail() : account.getEmail(),
                 saved.getOrderNumber(), saved.getReceiverName(), saved.getTotal(), saved.getAddress());
 
-        return orderMapper.toResponse(saved);
+        return toResponse(saved);
     }
 
     @Override
@@ -187,7 +192,7 @@ public class OrderServiceImpl implements OrderService {
     @Transactional(readOnly = true)
     public OrderResponse getMyOrderByNumber(UUID accountId, String orderNumber) {
         return orderRepository.findByOrderNumberAndAccountId(orderNumber.trim().toUpperCase(Locale.ROOT), accountId)
-                .map(orderMapper::toResponse)
+                .map(this::toResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found: " + orderNumber));
     }
 
@@ -224,7 +229,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(readOnly = true)
     public OrderResponse getOrderByNumber(String orderNumber) {
-        return orderMapper.toResponse(orderRepository.findWithItemsByOrderNumber(orderNumber)
+        return toResponse(orderRepository.findWithItemsByOrderNumber(orderNumber)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Order not found with number: " + orderNumber)));
     }
@@ -232,7 +237,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(readOnly = true)
     public OrderResponse getOrderById(UUID id) {
-        return orderMapper.toResponse(orderRepository.findWithItemsById(id)
+        return toResponse(orderRepository.findWithItemsById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id)));
     }
 
@@ -247,7 +252,7 @@ public class OrderServiceImpl implements OrderService {
     public OrderResponse updateStatus(UUID id, OrderStatusUpdateRequest request) {
         // Bản CÓ KHOÁ: shop huỷ đơn có thể chạy song song với khách huỷ, tác vụ quét hết hạn
         // hoặc IPN báo kết quả. Không khoá thì hai đường cùng đọc PENDING và cùng cộng kho.
-        OrderEntity order = orderRepository.findWithItemsByIdForUpdate(id)
+        OrderEntity order = orderRepository.findForUpdateWithItemsById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id));
 
         OrderStatus current = order.getStatus();
@@ -258,11 +263,16 @@ public class OrderServiceImpl implements OrderService {
                     "Cannot change order status from " + current + " to " + next);
         }
 
+        // Huỷ đơn phải đi qua markCancelled: nó làm đủ trả kho + đóng payment trong cùng giao dịch.
+        // Các chuyển trạng thái khác không đụng tới kho nên chỉ cần ghi trạng thái.
         if (next == OrderStatus.CANCELLED) {
-            restoreStock(order);
+            return markCancelled(order, null);
         }
+
         order.setStatus(next);
-        OrderResponse response = orderMapper.toResponse(orderRepository.save(order));
+        // saveAndFlush: cùng lý do như createOrder — không flush thì updatedAt trong response
+        // vẫn là giá trị CŨ đọc từ DB, không phải thời điểm vừa ghi.
+        OrderResponse response = toResponse(orderRepository.saveAndFlush(order));
 
         // Sau khi đã ghi trạng thái: thông báo hỏng không được kéo đổ việc đổi trạng thái,
         // service bên kia tự nuốt lỗi và chỉ ghi log.
@@ -275,7 +285,7 @@ public class OrderServiceImpl implements OrderService {
     public OrderResponse cancelMyOrder(UUID accountId, String orderNumber,
                                        OrderCancelRequest request) {
         // Bản CÓ KHOÁ — cùng lý do như updateStatus.
-        OrderEntity order = orderRepository.findByOrderNumberAndAccountIdForUpdate(orderNumber, accountId)
+        OrderEntity order = orderRepository.findForUpdateByOrderNumberAndAccountId(orderNumber, accountId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Order not found with number: " + orderNumber));
 
@@ -287,12 +297,52 @@ public class OrderServiceImpl implements OrderService {
                     "Order is already confirmed; contact the shop to cancel");
         }
 
-        // Dùng lại đúng đường hoàn kho của admin: hai bản hoàn kho khác nhau là mầm lệch số liệu.
+        // Dùng chung đúng một cửa với admin huỷ và (sau này) tác vụ quét hết hạn: ba bản huỷ khác
+        // nhau là mầm lệch số liệu kho và payment kẹt PENDING.
+        return markCancelled(order, request == null ? null : request.reason());
+    }
+
+    /**
+     * Map đơn sang DTO, kèm thời điểm đã trả tiền lấy từ feature payment.
+     *
+     * <p>Gom về một chỗ vì có nhiều đường trả {@code OrderResponse}; để mỗi nơi tự gọi mapper thì
+     * sớm muộn có một đường quên truyền {@code paidAt} và trả {@code null} sai sự thật.</p>
+     *
+     * <p>Đi qua {@code PaymentService} chứ <b>không</b> đọc thẳng {@code PaymentRepository}: tầng
+     * nghiệp vụ của một feature không được chạm repository của feature khác.</p>
+     */
+    private OrderResponse toResponse(OrderEntity order) {
+        return orderMapper.toResponse(order, paymentService.findPaidAtForOrder(order.getId()));
+    }
+
+    /**
+     * <b>Cửa DUY NHẤT ghi trạng thái {@code CANCELLED}.</b>
+     *
+     * <p>Bốn việc phải xảy ra cùng nhau, trong cùng một giao dịch: trả hàng về kho, đổi trạng thái
+     * đơn, đóng bản ghi thanh toán, báo cho shop. Tách rời nhau là mầm của những lỗi không thể phát
+     * hiện bằng mắt trên dữ liệu:</p>
+     * <ul>
+     *   <li>Quên {@link #restoreStock} ⇒ hàng biến mất khỏi kho vĩnh viễn, không lỗi nào báo.</li>
+     *   <li>Quên {@code releaseForOrderCancel} ⇒ đơn chết mà payment kẹt {@code PENDING}.</li>
+     * </ul>
+     *
+     * <p><b>Vì sao phải gom ngay bây giờ:</b> trước đây hai cửa ({@code updateStatus} nhánh huỷ và
+     * {@code cancelMyOrder}) tự làm lấy. Tác vụ quét hết hạn sắp tới là cửa thứ ba — mỗi cửa tự
+     * làm là mỗi lần có cơ hội quên một việc. Gom lại thì cửa thứ ba chỉ việc gọi hàm này.</p>
+     *
+     * @param cancelReason lý do huỷ; {@code null} với đơn do shop huỷ (giữ nguyên hành vi cũ)
+     */
+    private OrderResponse markCancelled(OrderEntity order, String cancelReason) {
         restoreStock(order);
         order.setStatus(OrderStatus.CANCELLED);
-        order.setCancelReason(request == null ? null : request.reason());
-        OrderResponse response = orderMapper.toResponse(orderRepository.save(order));
+        order.setCancelReason(cancelReason);
+        // Cùng giao dịch: đơn huỷ mà payment không đóng được thì cả hai cùng rollback.
+        paymentService.releaseForOrderCancel(order);
 
+        OrderResponse response = toResponse(orderRepository.saveAndFlush(order));
+
+        // Báo shop SAU khi đã ghi trạng thái, và không để thông báo hỏng kéo đổ việc huỷ đơn:
+        // notificationService tự nuốt lỗi và chỉ ghi log (cùng quy ước với updateStatus).
         notificationService.notifyOrderStatusChanged(order);
         return response;
     }
@@ -306,8 +356,8 @@ public class OrderServiceImpl implements OrderService {
      *
      * <h2>Hai lớp chặn cộng kho hai lần</h2>
      * <ol>
-     *   <li><b>Khoá bi quan trên đơn</b> ({@code findWithItemsByIdForUpdate} /
-     *       {@code findByOrderNumberAndAccountIdForUpdate}) — chặn hai đường <b>đang chạy đồng
+     *   <li><b>Khoá bi quan trên đơn</b> ({@code findForUpdateWithItemsById} /
+     *       {@code findForUpdateByOrderNumberAndAccountId}) — chặn hai đường <b>đang chạy đồng
      *       thời</b>.</li>
      *   <li><b>Cờ {@link OrderEntity#getStockRestored()}</b> — chặn đường tới <b>sau</b>, kể cả khi
      *       giao dịch trước đã commit và khoá đã nhả. Cờ này một chiều: bật rồi không tắt.</li>

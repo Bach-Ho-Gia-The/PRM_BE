@@ -13,6 +13,23 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Truy cập bảng {@code orders}.
+ *
+ * <h2>Quy ước đặt tên cho bản CÓ KHOÁ</h2>
+ *
+ * <p>Spring Data chỉ bỏ qua phần chữ nằm <b>giữa {@code find} và {@code By}</b>; mọi chữ nằm
+ * <b>sau {@code By}</b> đều bị hiểu là tên thuộc tính của entity. Vì vậy:</p>
+ * <ul>
+ *   <li>{@code findWithItemsById} — chạy được: {@code WithItems} đứng trước {@code By} nên bị bỏ qua.</li>
+ *   <li>{@code findForUpdateById} — chạy được: {@code ForUpdate} đứng trước {@code By}.</li>
+ *   <li>{@code findByIdForUpdate} — <b>HỎNG</b>: {@code id.forUpdate} bị coi là đường dẫn thuộc tính
+ *       ⇒ lúc khởi động ném {@code PropertyReferenceException: No property 'forUpdate' found} ⇒
+ *       <b>toàn bộ ứng dụng không start</b>, không phải chỉ riêng endpoint.</li>
+ * </ul>
+ * <p>Nên từ phân biệt <b>bắt buộc</b> phải nằm trước {@code By}. Đây cũng là lý do hai method có
+ * khoá bên dưới mang tên khác hẳn bản không khoá, thay vì thêm hậu tố.</p>
+ */
 @Repository
 public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
         JpaSpecificationExecutor<OrderEntity> {
@@ -58,17 +75,18 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @EntityGraph(attributePaths = {"items"})
-    Optional<OrderEntity> findWithItemsByIdForUpdate(UUID id);
+    Optional<OrderEntity> findForUpdateWithItemsById(UUID id);
 
     /**
-     * Bản khoá theo <b>mã đơn của chính chủ sở hữu</b> — dùng cho luồng khách tự huỷ.
+     * Bản khoá theo <b>mã đơn của chính chủ sở hữu</b> — dùng cho luồng khách tự huỷ và luồng mở
+     * link thanh toán.
      *
      * <p>Lọc luôn {@code accountId} ngay trong câu SQL: quên một dòng so sánh ở service là huỷ được
      * đơn của người khác. Ở đây muốn quên cũng không được.</p>
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @EntityGraph(attributePaths = {"items"})
-    Optional<OrderEntity> findByOrderNumberAndAccountIdForUpdate(String orderNumber, UUID accountId);
+    Optional<OrderEntity> findForUpdateByOrderNumberAndAccountId(String orderNumber, UUID accountId);
 
     /** Danh sách đơn của tôi. KHÔNG fetch items — màn hình danh sách không dùng tới. */
     Page<OrderEntity> findByAccountId(UUID accountId, Pageable pageable);

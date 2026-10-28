@@ -84,7 +84,7 @@ class OrderConfirmationMailTest {
         when(products.findByIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(product));
         when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(variant));
         when(orders.existsByOrderNumber(any())).thenReturn(false);
-        when(orders.save(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
+        when(orders.saveAndFlush(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
     }
 
     private OrderRequest request(String email) {

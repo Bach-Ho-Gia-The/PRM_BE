@@ -9,6 +9,8 @@ import com.structure.springboot.features.order.config.OrderProperties;
 import com.structure.springboot.features.order.dto.request.OrderItemRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
 import com.structure.springboot.features.order.entity.OrderEntity;
+import com.structure.springboot.features.order.entity.OrderItemEntity;
+import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
@@ -95,7 +97,7 @@ class OrderBusinessRuleTest {
         when(products.findByIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(product));
         when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(variant));
         lenient().when(orders.existsByOrderNumber(any())).thenReturn(false);
-        lenient().when(orders.save(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
+        lenient().when(orders.saveAndFlush(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
     }
 
     private OrderRequest withLines(OrderItemRequest... lines) {
@@ -122,7 +124,7 @@ class OrderBusinessRuleTest {
                         withLines(line(999), line(999), line(999))));
 
         assertEquals(ErrorCode.BAD_REQUEST, exception.getErrorCode());
-        verify(orders, never()).save(any());
+        verify(orders, never()).saveAndFlush(any());
     }
 
     @Test
@@ -189,7 +191,7 @@ class OrderBusinessRuleTest {
     /** Lay dung entity ma service da dua xuong save(). */
     private OrderEntity savedOrder() {
         ArgumentCaptor<OrderEntity> captor = ArgumentCaptor.forClass(OrderEntity.class);
-        verify(orders).save(captor.capture());
+        verify(orders).saveAndFlush(captor.capture());
         return captor.getValue();
     }
 
@@ -234,5 +236,50 @@ class OrderBusinessRuleTest {
         assertNotNull(dueAt);
         assertTrue(dueAt.isAfter(before.plus(Duration.ofMinutes(3)).minusSeconds(10)));
         assertTrue(dueAt.isBefore(Instant.now().plus(Duration.ofMinutes(3)).plusSeconds(10)));
+    }
+
+    // ───────────── cua admin huy don cung phai tra kho + dong payment ─────────────
+
+    /**
+     * Shop huy don la CUA THU HAI ghi CANCELLED. No phai di qua dung mot cua voi khach huy.
+     *
+     * <p>Day la test chong loi "mot cua quen mot viec": neu sau nay ai do them duong huy don thu
+     * ba (vi du tac vu quet het han) ma chi set status, thi kho mat hang va payment ket PENDING,
+     * khong loi nao bao. Test nay khoa hanh vi cua cua admin lai.</p>
+     */
+    @Test
+    void adminCancellingAlsoRestoresStockAndClosesPayment() {
+        // Khong goi stubCatalog: test nay khong tao don qua createOrder nen cac stub do la thua,
+        // va Mockito strict se bao UnnecessaryStubbing.
+        OrderEntity order = OrderEntity.builder()
+                .orderNumber("LBVN-2610-ADMN").account(account)
+                .status(OrderStatus.PENDING).paymentMethod(PaymentMethod.BANK_TRANSFER)
+                .receiverName("Nguyen Van A").phone("0901234567").address("12 Nguyen Hue, Q1")
+                .subtotal(new BigDecimal("100000")).shippingFee(BigDecimal.ZERO)
+                .discount(BigDecimal.ZERO).total(new BigDecimal("100000")).totalItems(1)
+                .build();
+        order.setId(UUID.randomUUID());
+
+        ProductVariantEntity stock = ProductVariantEntity.builder()
+                .product(product).size(ProductSize.M).stockQuantity(7).build();
+        stock.setId(UUID.randomUUID());
+        order.getItems().add(OrderItemEntity.builder()
+                .order(order).product(product).productName(product.getName())
+                .productSlug(product.getSlug()).size(ProductSize.M)
+                .unitPrice(new BigDecimal("100000")).quantity(2).lineTotal(new BigDecimal("200000"))
+                .build());
+
+        when(orders.findForUpdateWithItemsById(order.getId())).thenReturn(Optional.of(order));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(stock));
+        when(orders.saveAndFlush(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
+
+        service.updateStatus(order.getId(), new OrderStatusUpdateRequest(OrderStatus.CANCELLED));
+
+        assertEquals(OrderStatus.CANCELLED, order.getStatus());
+        // Cua admin cung phai tra kho...
+        assertEquals(9, stock.getStockQuantity());   // 7 + 2
+        assertEquals(Boolean.TRUE, order.getStockRestored());
+        // ...va cung phai dong payment, khong duoc bo qua.
+        verify(payments).releaseForOrderCancel(order);
     }
 }

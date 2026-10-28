@@ -5,6 +5,7 @@ import com.structure.springboot.features.payment.dto.response.PaymentResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
 
+import java.time.Instant;
 import java.util.UUID;
 
 public interface PaymentService {
@@ -33,4 +34,48 @@ public interface PaymentService {
 
     /** Trạng thái thanh toán của một đơn của chính khách đang đăng nhập. Chỉ đọc. */
     PaymentResponse getMyPayment(UUID accountId, String orderNumber);
+
+    /**
+     * Đóng lần thử thanh toán đang mở của một đơn vừa bị huỷ, đánh dấu {@code CANCELLED}.
+     *
+     * <p><b>Đây là việc bắt buộc, không phải tuỳ chọn.</b> Huỷ đơn mà để payment kẹt {@code PENDING}
+     * là trạng thái bất khả thi: bản ghi thanh toán sống mãi trong khi đơn đã chết, và mọi phép
+     * đếm "đơn đang chờ tiền" đều sai.</p>
+     *
+     * <p>Kết quả theo trạng thái payment mới nhất:</p>
+     * <ul>
+     *   <li>{@code PENDING} ⇒ {@code CANCELLED}</li>
+     *   <li>{@code PAID} ⇒ <b>không đụng</b>. Tiền đã về thì không được ghi đè lịch sử; phần hoàn
+     *       tiền do luồng hoàn tiền lo, không phải hàm này.</li>
+     *   <li>không có payment, hoặc đã {@code CANCELLED}/{@code EXPIRED}/{@code FAILED} ⇒ không làm gì
+     *       (<b>idempotent</b> — gọi lại nhiều lần vô hại)</li>
+     * </ul>
+     *
+     * <p>Phải gọi <b>trong cùng giao dịch</b> với việc đổi trạng thái đơn: đơn huỷ mà payment không
+     * đóng được thì cả hai cùng rollback, không để lại nửa vời.</p>
+     */
+    void releaseForOrderCancel(OrderEntity order);
+
+    /**
+     * Đóng lần thử thanh toán đang mở vì đơn <b>quá hạn thanh toán</b>, đánh dấu {@code EXPIRED}.
+     *
+     * <p>Tách khỏi {@link #releaseForOrderCancel} chứ không gộp thành một hàm có tham số trạng thái:
+     * "khách đổi ý" và "hết hạn" là hai nghiệp vụ khác nhau, gộp lại thì người gọi truyền sai lúc
+     * nào không biết. Cùng lý do dự án không gộp hàm huỷ đơn của khách với hàm đổi trạng thái của shop.</p>
+     *
+     * <p>Quy tắc giống hệt {@link #releaseForOrderCancel}, chỉ khác trạng thái đích: {@code PAID}
+     * không bị đụng, các trạng thái đã dứt điểm thì bỏ qua.</p>
+     */
+    void expireForOrder(OrderEntity order);
+
+    /**
+     * Thời điểm đơn đã được trả tiền, {@code null} nếu chưa.
+     *
+     * <p>Trả {@code Instant} chứ không trả cả DTO vì phía đơn hàng chỉ cần đúng một dữ kiện này để
+     * hiển thị — giao diện bên ngoài không nên biết tới hình dạng bản ghi thanh toán.</p>
+     *
+     * <p>Phải đi qua service chứ không đọc thẳng bảng {@code payments}: tầng nghiệp vụ của một
+     * feature không được chạm repository của feature khác.</p>
+     */
+    Instant findPaidAtForOrder(UUID orderId);
 }
