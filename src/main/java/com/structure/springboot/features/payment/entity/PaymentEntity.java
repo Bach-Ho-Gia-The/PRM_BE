@@ -17,10 +17,18 @@ import java.time.Instant;
 @Entity
 @Table(
         name = "payments",
-        uniqueConstraints = @UniqueConstraint(
-                name = "uk_payments_txn_ref",
-                columnNames = "txn_ref"
-        ),
+        uniqueConstraints = {
+                // Một txnRef là một lần thử, không bao giờ dùng lại.
+                @UniqueConstraint(
+                        name = "uk_payments_txn_ref",
+                        columnNames = "txn_ref"
+                ),
+                // Hai lần thử của cùng một đơn không được đội số của nhau.
+                @UniqueConstraint(
+                        name = "uk_payments_order_attempt",
+                        columnNames = {"order_id", "attempt_no"}
+                )
+        },
         indexes = {
                 @Index(
                         name = "idx_payments_order_id",
@@ -62,8 +70,25 @@ public class PaymentEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 20)
     private PaymentStatus status = PaymentStatus.PENDING;
 
-    @Column(name = "expires_at", nullable = false, updatable = false)
+    /**
+     * Hạn thanh toán của LẦN THỬ này — bản sao của {@code orders.payment_due_at} tại thời điểm tạo.
+     *
+     * <p><b>Nullable</b> vì COD không có hạn thanh toán. Với đơn chuyển khoản, giá trị này sao chép
+     * từ đơn chứ không tự tính, nên mọi lần thử lại đều dùng chung một hạn — bấm "thanh toán lại"
+     * không làm hạn dài thêm.</p>
+     */
+    @Column(name = "expires_at")
     private Instant expiresAt;
+
+    /**
+     * Lần thử thanh toán thứ mấy của đơn, bắt đầu từ 1.
+     *
+     * <p>Chỉ để <b>đánh số và hiển thị</b>. Việc "đơn này đã thử mấy lần" đếm được bằng
+     * {@code count(order_id)} — cột này không phải cơ chế đếm duy nhất. Ràng buộc unique
+     * {@code (order_id, attempt_no)} chỉ để hai lần thử không đội số của nhau.</p>
+     */
+    @Column(name = "attempt_no", nullable = false)
+    private Integer attemptNo;
 
     /** Thời điểm thanh toán thành công theo dữ liệu đã xác thực. */
     @Column(name = "paid_at")

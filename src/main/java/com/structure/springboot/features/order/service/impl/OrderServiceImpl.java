@@ -22,6 +22,7 @@ import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.order.service.OrderService;
 import com.structure.springboot.features.order.specification.OrderSpecifications;
+import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
 import com.structure.springboot.features.product.enums.ProductSize;
@@ -88,6 +89,7 @@ public class OrderServiceImpl implements OrderService {
     private final NotificationService notificationService;
     private final BrevoMailClient brevoMailClient;
     private final OrderProperties orderProperties;
+    private final PaymentService paymentService;
 
     @Override
     @Transactional
@@ -160,6 +162,12 @@ public class OrderServiceImpl implements OrderService {
         order.setPaymentDueAt(resolvePaymentDueAt(request.paymentMethod()));
 
         OrderEntity saved = orderRepository.save(order);
+
+        // Ghi nhận lần thử thanh toán đầu tiên, TRONG CÙNG giao dịch với việc tạo đơn: hoặc cả hai
+        // cùng ra đời, hoặc cùng không. Tách ra ngoài thì có khoảng thời gian đơn tồn tại mà không
+        // có bản ghi thanh toán nào — đơn COD sẽ không có gì để shop bấm "đã thu tiền".
+        // Áp cho cả COD: đơn COD vẫn có payment, chỉ khác là không có hạn thanh toán.
+        paymentService.createFirstAttempt(saved);
 
         sendConfirmationAfterCommit(
                 StringUtils.hasText(saved.getEmail()) ? saved.getEmail() : account.getEmail(),

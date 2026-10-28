@@ -11,6 +11,7 @@ import com.structure.springboot.features.order.entity.OrderItemEntity;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -56,6 +57,7 @@ class OrderCancelServiceTest {
     @Mock private NotificationService notifications;
     @Mock private OrderProperties orderProperties;
     @Mock private BrevoMailClient mail;
+    @Mock private PaymentService payments;
     private OrderServiceImpl service;
 
     private final UUID me = UUID.randomUUID();
@@ -64,7 +66,7 @@ class OrderCancelServiceTest {
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, orderProperties);
+                notifications, mail, orderProperties, payments);
     }
 
     private ProductEntity product() {

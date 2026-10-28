@@ -10,6 +10,7 @@ import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -52,6 +53,7 @@ class OrderConfirmationMailTest {
     @Mock private ProductVariantRepository variants;
     @Mock private NotificationService notifications;
     @Mock private BrevoMailClient mail;
+    @Mock private PaymentService payments;
     private OrderServiceImpl service;
 
     private AccountEntity account;
@@ -61,7 +63,7 @@ class OrderConfirmationMailTest {
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, new OrderProperties(null, null, null));
+                notifications, mail, new OrderProperties(null, null, null), payments);
 
         account = new AccountEntity();
         account.setId(UUID.randomUUID());

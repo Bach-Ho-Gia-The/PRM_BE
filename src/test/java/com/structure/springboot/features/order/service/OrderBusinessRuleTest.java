@@ -13,6 +13,7 @@ import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -63,6 +64,7 @@ class OrderBusinessRuleTest {
     @Mock private ProductVariantRepository variants;
     @Mock private NotificationService notifications;
     @Mock private BrevoMailClient mail;
+    @Mock private PaymentService payments;
     private OrderServiceImpl service;
 
     private AccountEntity account;
@@ -72,7 +74,7 @@ class OrderBusinessRuleTest {
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, new OrderProperties(null, null, null));
+                notifications, mail, new OrderProperties(null, null, null), payments);
 
         account = new AccountEntity();
         account.setId(UUID.randomUUID());
@@ -222,7 +224,7 @@ class OrderBusinessRuleTest {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         OrderServiceImpl threeMinutes = new OrderServiceImpl(orders, accounts, products, variants,
                 mapper, notifications, mail,
-                new OrderProperties(null, null, Duration.ofMinutes(3)));
+                new OrderProperties(null, null, Duration.ofMinutes(3)), payments);
         stubCatalog(10);
         Instant before = Instant.now();
 

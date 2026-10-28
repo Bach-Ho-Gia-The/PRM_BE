@@ -1,0 +1,202 @@
+package com.structure.springboot.features.payment.service.impl;
+
+import com.structure.springboot.common.exception.ApiException;
+import com.structure.springboot.common.exception.ErrorCode;
+import com.structure.springboot.features.order.entity.OrderEntity;
+import com.structure.springboot.features.order.enums.OrderStatus;
+import com.structure.springboot.features.order.enums.PaymentMethod;
+import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.dto.request.VnpayPaymentRequest;
+import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
+import com.structure.springboot.features.payment.entity.PaymentEntity;
+import com.structure.springboot.features.payment.enums.PaymentStatus;
+import com.structure.springboot.features.payment.mapper.PaymentMapper;
+import com.structure.springboot.features.payment.repository.PaymentRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
+import com.structure.springboot.infrastructure.external.vnpay.VnpayPaymentUrlBuilder;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class PaymentServiceImpl implements PaymentService {
+
+    private final PaymentRepository paymentRepository;
+    private final OrderRepository orderRepository;
+    private final PaymentMapper paymentMapper;
+    private final VnpayPaymentUrlBuilder vnpayPaymentUrlBuilder;
+
+    @Override
+    @Transactional
+    public PaymentEntity createFirstAttempt(OrderEntity order) {
+        return paymentRepository.save(PaymentEntity.builder()
+                .order(order)
+                .txnRef(newTxnRef())
+                // Số tiền phải là tổng đơn khách thực trả, gồm cả phí ship — không phải subtotal.
+                .amount(order.getTotal())
+                .status(PaymentStatus.PENDING)
+                // Sao chép hạn từ ĐƠN, không tự tính: mọi lần thử sau cũng phải dùng đúng hạn này.
+                // COD thì order.paymentDueAt = null ⇒ payment cũng không có hạn.
+                .expiresAt(order.getPaymentDueAt())
+                .attemptNo(1)
+                .build());
+    }
+
+    @Override
+    @Transactional
+    public VnpayPaymentUrlResponse startVnpayPayment(UUID accountId, String orderNumber, String clientIp) {
+        // Khoá đơn: hai request bấm "thanh toán" cùng lúc không được cùng sinh ra một lần thử mới,
+        // và không được cùng đọc ra số lần thử cũ rồi đội số của nhau.
+        OrderEntity order = orderRepository.findByOrderNumberAndAccountIdForUpdate(
+                        normalizeOrderNumber(orderNumber), accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        requirePayableByVnpay(order);
+
+        PaymentEntity payment = resolveAttemptFor(order);
+
+        String paymentUrl = vnpayPaymentUrlBuilder.build(new VnpayPaymentRequest(
+                payment.getTxnRef(),
+                payment.getAmount(),
+                payment.getCreatedAt(),
+                payment.getExpiresAt(),
+                clientIp
+        ));
+
+        return new VnpayPaymentUrlResponse(
+                paymentUrl,
+                payment.getTxnRef(),
+                payment.getAmount(),
+                payment.getStatus(),
+                payment.getExpiresAt()
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PaymentResponse getMyPayment(UUID accountId, String orderNumber) {
+        // Tra đơn trước để dùng lại đúng câu lọc chủ sở hữu: khách không xem được thanh toán của
+        // đơn người khác, và nhận 404 chứ không 403 (không để lộ đơn có tồn tại hay không).
+        OrderEntity order = orderRepository.findByOrderNumberAndAccountId(
+                        normalizeOrderNumber(orderNumber), accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .map(paymentMapper::toResponse)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "This order has no payment record: " + orderNumber));
+    }
+
+    /**
+     * Đơn có được phép mở link VNPay hay không.
+     *
+     * <p>Mọi nhánh đều là lỗi <b>nghiệp vụ do client</b> gây ra nên dùng {@link ApiException} với
+     * 409, không phải {@code IllegalArgumentException} (thứ dành cho hợp đồng nội bộ bị vi phạm,
+     * sẽ ra 500).</p>
+     */
+    private void requirePayableByVnpay(OrderEntity order) {
+        if (order.getPaymentMethod() != PaymentMethod.BANK_TRANSFER) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is paid on delivery (COD); VNPay is not available");
+        }
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            // Hết hạn cũng dẫn tới đây: quá hạn thì đơn đã bị huỷ và hàng đã trả kho.
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is cancelled and can no longer be paid");
+        }
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is already " + order.getStatus() + " and can no longer be paid");
+        }
+        if (isPastDeadline(order)) {
+            throw new ApiException(ErrorCode.CONFLICT, "Payment has expired");
+        }
+        if (paymentRepository.existsByOrderIdAndStatus(order.getId(), PaymentStatus.PAID)) {
+            throw new ApiException(ErrorCode.CONFLICT, "This order has already been paid");
+        }
+    }
+
+    /**
+     * Quyết định dùng lại lần thử cũ hay mở lần thử mới, rồi trả về bản ghi sẽ dựng link.
+     *
+     * <p><b>Quy tắc đã chốt:</b></p>
+     * <ul>
+     *   <li>{@code PENDING} ⇒ <b>dùng lại</b>: giữ nguyên {@code txnRef} và {@code expiresAt}. Đây
+     *       là cơ chế "mở lại link không gia hạn thêm 15 phút".</li>
+     *   <li>{@code FAILED} ⇒ mở lần thử mới, {@code txnRef} mới, nhưng <b>hạn vẫn là hạn cũ</b>
+     *       (lấy từ đơn, không cộng thêm).</li>
+     *   <li>{@code CANCELLED} ⇒ <b>từ chối</b>. Đây là ca <b>khách chủ động huỷ thanh toán</b>,
+     *       khác hẳn thất bại: huỷ là khách đổi ý, không được tự động mở lần mới. Hai trạng thái do
+     *       hai đường khác nhau ghi (IPN thất bại → {@code FAILED}; khách bấm huỷ → {@code CANCELLED}),
+     *       nên chỉ cần chặn {@code CANCELLED} là đủ để không retry sau khi khách đổi ý.</li>
+     *   <li>{@code EXPIRED} ⇒ <b>từ chối</b>. Đơn đã bị huỷ và hàng đã trả kho; khách phải đặt đơn mới.</li>
+     * </ul>
+     */
+    private PaymentEntity resolveAttemptFor(OrderEntity order) {
+        Optional<PaymentEntity> lastAttempt =
+                paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId());
+
+        if (lastAttempt.isEmpty()) {
+            // Đơn tạo trước CK-2 nên chưa có bản ghi payment nào — vẫn phải phục vụ được.
+            return createAttempt(order, 1);
+        }
+
+        PaymentEntity last = lastAttempt.get();
+
+        return switch (last.getStatus()) {
+            case PENDING -> last;
+            case FAILED -> createAttempt(order, last.getAttemptNo() + 1);
+            case CANCELLED -> throw new ApiException(ErrorCode.CONFLICT,
+                    "This payment was cancelled; place a new order to pay again");
+            case EXPIRED -> throw new ApiException(ErrorCode.CONFLICT,
+                    "Payment has expired; place a new order to pay again");
+            case PAID -> throw new ApiException(ErrorCode.CONFLICT, "This order has already been paid");
+        };
+    }
+
+    /**
+     * Mở một lần thử thanh toán mới.
+     *
+     * <p>{@code expiresAt} <b>luôn</b> lấy từ {@code order.paymentDueAt}, không bao giờ tính lại —
+     * đó là điểm chặn việc gia hạn bằng cách bấm thanh toán lại nhiều lần.</p>
+     */
+    private PaymentEntity createAttempt(OrderEntity order, int attemptNo) {
+        return paymentRepository.save(PaymentEntity.builder()
+                .order(order)
+                .txnRef(newTxnRef())
+                .amount(order.getTotal())
+                .status(PaymentStatus.PENDING)
+                .expiresAt(order.getPaymentDueAt())
+                .attemptNo(attemptNo)
+                .build());
+    }
+
+    private boolean isPastDeadline(OrderEntity order) {
+        return order.getPaymentDueAt() != null && !Instant.now().isBefore(order.getPaymentDueAt());
+    }
+
+    /**
+     * {@code txnRef} = UUID <b>bỏ dấu gạch</b>, sinh độc lập cho mỗi lần thử.
+     *
+     * <p>Không nhét số đơn vào đây: payment đã liên kết với đơn qua {@code order_id}. Một UUID 32 ký
+     * tự vừa khớp giới hạn {@code Alphanumeric[1,100]} của VNPay, vừa không thể đoán để dò giao dịch
+     * của đơn khác. Ràng buộc unique trên cột là lớp chặn cuối nếu có trùng.</p>
+     */
+    private String newTxnRef() {
+        return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /** Mã đơn khách đọc trên hoá đơn luôn ở dạng chữ hoa; chuẩn hoá để tra không trượt. */
+    private String normalizeOrderNumber(String orderNumber) {
+        return orderNumber == null ? null : orderNumber.trim().toUpperCase(Locale.ROOT);
+    }
+}
