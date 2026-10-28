@@ -166,6 +166,22 @@ app:
     register-ttl-seconds: ${OTP_REGISTER_TTL_SECONDS:600}
     resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:20}
 
+  payment:
+    vnpay:
+      tmn-code: ${VNPAY_TMN_CODE}
+      hash-secret: ${VNPAY_HASH_SECRET}
+      payment-url: ${VNPAY_PAYMENT_URL}
+      api-url: ${VNPAY_API_URL}
+      return-url: ${VNPAY_RETURN_URL}
+      payment-timeout: ${VNPAY_PAYMENT_TIMEOUT}
+
+      version: "2.1.0"
+      command: pay
+      currency: VND
+      locale: vn
+      order-type: other
+      zone-id: Asia/Ho_Chi_Minh
+
 # ==========================================
 # CLOUDIRARY - UPLOAD ẢNH
 # ==========================================
