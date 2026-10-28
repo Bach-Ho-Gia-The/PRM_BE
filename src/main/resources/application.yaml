@@ -138,6 +138,12 @@ app:
     # Phí ship mặc định. Miễn phí khi chuyển khoản hoặc khi đơn đạt ngưỡng bên dưới.
     shipping-fee: ${ORDER_SHIPPING_FEE:30000}
     free-shipping-threshold: ${ORDER_FREE_SHIPPING_THRESHOLD:1000000}
+    # Hạn thanh toán của đơn (đơn BANK_TRANSFER). COD không có hạn.
+    # ⚠ Đặt ở đây chứ không ở app.payment.vnpay: đây là luật của ĐƠN HÀNG, không phải của
+    #   cổng thanh toán. order KHÔNG biết payment là ai — chiều phụ thuộc chỉ một hướng.
+    # ⚠ Áp trần 30m trong OrderProperties: gõ nhầm "15s"/"15d" thì app không khởi động,
+    #   thay vì âm thầm tự huỷ mọi đơn.
+    payment-timeout: ${ORDER_PAYMENT_TIMEOUT:15m}
 
   jwt:
     secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
@@ -173,7 +179,6 @@ app:
       payment-url: ${VNPAY_PAYMENT_URL}
       api-url: ${VNPAY_API_URL}
       return-url: ${VNPAY_RETURN_URL}
-      payment-timeout: ${VNPAY_PAYMENT_TIMEOUT}
 
       version: "2.1.0"
       command: pay

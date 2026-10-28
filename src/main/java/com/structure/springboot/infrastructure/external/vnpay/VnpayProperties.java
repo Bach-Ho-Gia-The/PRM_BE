@@ -6,7 +6,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
 import java.net.URI;
-import java.time.Duration;
 import java.time.ZoneId;
 
 /**
@@ -27,7 +26,6 @@ public record VnpayProperties(
         @NotBlank String paymentUrl,
         @NotBlank String apiUrl,
         @NotBlank String returnUrl,
-        @NotNull Duration paymentTimeout,
         @NotBlank String version,
         @NotBlank String command,
         @NotBlank String currency,
@@ -37,12 +35,6 @@ public record VnpayProperties(
 ) {
 
     public VnpayProperties {
-        if (paymentTimeout != null
-                && (paymentTimeout.isNegative() || paymentTimeout.isZero())) {
-            throw new IllegalArgumentException(
-                    "VNPay payment timeout must be positive");
-        }
-
         // Cổng thanh toán là địa chỉ cố định của VNPay, gọi kèm query do chính mình dựng ⇒
         // không được phép mang sẵn query/fragment, và bắt buộc HTTPS.
         validateUrl(paymentUrl, "payment URL", false);

@@ -107,8 +107,8 @@ class OrderCancelServiceTest {
     void cancellingAPendingOrderFlipsStatusAndStoresTheReason() {
         ProductEntity product = product();
         OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 2));
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection()))
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
                 .thenReturn(List.of(variant(product, ProductSize.S, 5)));
         echoSave();
 
@@ -124,8 +124,8 @@ class OrderCancelServiceTest {
         ProductEntity product = product();
         OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 2));
         ProductVariantEntity stock = variant(product, ProductSize.S, 5);
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of(stock));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(stock));
         echoSave();
 
         service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
@@ -143,8 +143,8 @@ class OrderCancelServiceTest {
         ProductVariantEntity small = variant(product, ProductSize.S, 0);
         ProductVariantEntity medium = variant(product, ProductSize.M, 10);
         ProductVariantEntity large = variant(product, ProductSize.L, 4);
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of(small, medium, large));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(small, medium, large));
         echoSave();
 
         service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
@@ -158,8 +158,8 @@ class OrderCancelServiceTest {
     void cancellingWithoutABodyIsAllowedAndLeavesTheReasonEmpty() {
         ProductEntity product = product();
         OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 1));
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection()))
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
                 .thenReturn(List.of(variant(product, ProductSize.S, 1)));
         echoSave();
 
@@ -170,8 +170,8 @@ class OrderCancelServiceTest {
     void cancellingNotifiesTheCustomer() {
         ProductEntity product = product();
         OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 1));
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection()))
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
                 .thenReturn(List.of(variant(product, ProductSize.S, 1)));
         echoSave();
 
@@ -183,7 +183,7 @@ class OrderCancelServiceTest {
     @Test
     void cancellingTwiceIsRejected() {
         OrderEntity entity = order(OrderStatus.CANCELLED);
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.cancelMyOrder(me, "LBVN-2610-A7K2", null));
@@ -195,7 +195,7 @@ class OrderCancelServiceTest {
     @Test
     void confirmedOrderMustGoThroughTheShop() {
         OrderEntity entity = order(OrderStatus.CONFIRMED);
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.cancelMyOrder(me, "LBVN-2610-A7K2", null));
@@ -208,7 +208,7 @@ class OrderCancelServiceTest {
     @Test
     void completedOrderCannotBeCancelled() {
         OrderEntity entity = order(OrderStatus.COMPLETED);
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
 
         assertEquals(ErrorCode.CONFLICT, assertThrows(ApiException.class,
                 () -> service.cancelMyOrder(me, "LBVN-2610-A7K2", null)).getErrorCode());
@@ -217,7 +217,7 @@ class OrderCancelServiceTest {
     /** Don cua nguoi khac phai la 404 chu khong 403: khong lo rang ma don do co that. */
     @Test
     void someoneElsesOrderIsNotFoundNotForbidden() {
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-XXXX", me)).thenReturn(Optional.empty());
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-XXXX", me)).thenReturn(Optional.empty());
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.cancelMyOrder(me, "LBVN-2610-XXXX", null));
@@ -225,12 +225,55 @@ class OrderCancelServiceTest {
         assertEquals(ErrorCode.NOT_FOUND, exception.getErrorCode());
     }
 
+    /**
+     * Chong hoan kho hai lan khi don da bi danh dau la da hoan.
+     *
+     * <p>Mo phong tinh huong that: mot duong khac (shop huy, tac vu het han, IPN ve muon) da hoan
+     * kho va bat co truoc khi duong nay doc duoc don. Khoa bi quan KHONG cuu duoc ca nay vi khoa chi
+     * song trong mot giao dich — day chinh la ly do phai co co o tang du lieu.</p>
+     */
+    @Test
+    void anOrderAlreadyMarkedAsRestoredDoesNotAddStockAgain() {
+        ProductEntity product = product();
+        OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 2));
+        entity.setStockRestored(Boolean.TRUE);
+        ProductVariantEntity stock = variant(product, ProductSize.S, 5);
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        echoSave();
+
+        service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
+
+        assertEquals(5, stock.getStockQuantity()); // KHONG thanh 7
+        verify(variants, never()).findByProductIdInOrderByIdAsc(anyCollection());
+    }
+
+    /** Huy thanh cong phai bat co, de lan sau khong hoan nua. */
+    @Test
+    void cancellingMarksStockAsRestored() {
+        ProductEntity product = product();
+        OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 2));
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
+                .thenReturn(List.of(variant(product, ProductSize.S, 5)));
+        echoSave();
+
+        service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
+
+        assertEquals(Boolean.TRUE, entity.getStockRestored());
+    }
+
+    /** Don moi tao: co phai la Boolean false, khong duoc null (cot NOT NULL). */
+    @Test
+    void aFreshOrderStartsWithStockNotRestored() {
+        assertEquals(Boolean.FALSE, order(OrderStatus.PENDING).getStockRestored());
+    }
+
     @Test
     void aVariantDeletedAfterTheOrderDoesNotBlockCancelling() {
         ProductEntity product = product();
         OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 2));
-        when(orders.findByOrderNumberAndAccountId("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
-        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of()); // size da bi go
+        when(orders.findByOrderNumberAndAccountIdForUpdate("LBVN-2610-A7K2", me)).thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of()); // size da bi go
         echoSave();
 
         assertEquals(OrderStatus.CANCELLED,

@@ -61,7 +61,7 @@ class OrderConfirmationMailTest {
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, new OrderProperties(null, null));
+                notifications, mail, new OrderProperties(null, null, null));
 
         account = new AccountEntity();
         account.setId(UUID.randomUUID());
@@ -80,7 +80,7 @@ class OrderConfirmationMailTest {
         variant.setId(UUID.randomUUID());
         when(accounts.findById(account.getId())).thenReturn(Optional.of(account));
         when(products.findByIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(product));
-        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of(variant));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(variant));
         when(orders.existsByOrderNumber(any())).thenReturn(false);
         when(orders.save(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
     }

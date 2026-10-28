@@ -13,6 +13,7 @@ import lombok.Setter;
 import lombok.experimental.SuperBuilder;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -75,6 +76,39 @@ public class OrderEntity extends BaseEntity {
     /** Lý do khách tự huỷ. Null với đơn do admin huỷ hoặc đơn chưa huỷ. */
     @Column(name = "cancel_reason", length = 300)
     private String cancelReason;
+
+    /**
+     * Hạn thanh toán của <b>đơn</b> — nguồn chuẩn duy nhất, có ngay từ lúc đặt hàng.
+     *
+     * <p><b>Vì sao nằm ở đơn chứ không nằm trên từng lần thử thanh toán:</b> khi một lần thử thất
+     * bại dứt điểm, khách được thử lại bằng một giao dịch mới — nhưng <b>mọi lần thử dùng chung
+     * một hạn</b>. Nếu hạn chỉ sống trên bảng thanh toán thì mỗi lần thử lại sinh ra một hạn mới,
+     * tức là mở đường gia hạn vô hạn chỉ bằng cách bấm "thanh toán lại".</p>
+     *
+     * <p>{@code null} = đơn không có hạn thanh toán (COD — trả tiền khi nhận hàng).</p>
+     *
+     * <p>Đặt <b>một lần</b> lúc tạo đơn và không có đường nào sửa — đó chính là cơ chế "mở lại
+     * link thanh toán không tự gia hạn thêm".</p>
+     */
+    @Column(name = "payment_due_at")
+    private Instant paymentDueAt;
+
+    /**
+     * Hàng của đơn này đã từng được trả về kho hay chưa — <b>cờ một chiều, bật rồi không tắt</b>.
+     *
+     * <p><b>Đây là chốt chặn ở tầng dữ liệu, không phải trạng thái tạm.</b> Bốn đường có thể huỷ
+     * cùng một đơn (khách huỷ, shop huỷ, tác vụ quét hết hạn, IPN báo kết quả). Khoá bi quan trên
+     * đơn chặn được hai đường <b>đang chạy đồng thời</b>, nhưng khoá chỉ sống trong một giao dịch —
+     * đường thứ hai tới sau khi giao dịch đầu đã commit thì khoá đã nhả. Cờ này sống trong bảng nên
+     * chặn được cả trường hợp đó.</p>
+     *
+     * <p><b>Tuyệt đối không "tắt cờ sau khi hoàn kho xong":</b> sự thật "đã hoàn kho" không bao giờ
+     * đảo ngược. Tắt đi thì lần huỷ thứ hai (bấm lại do lỗi mạng, tab khác, IPN về muộn) lại thấy
+     * "chưa hoàn" và cộng kho thêm lần nữa — đúng thứ cờ này sinh ra để chặn.</p>
+     */
+    @Builder.Default
+    @Column(name = "stock_restored", nullable = false)
+    private Boolean stockRestored = Boolean.FALSE;
 
     @Column(name = "subtotal", nullable = false, precision = 12, scale = 2)
     private BigDecimal subtotal;

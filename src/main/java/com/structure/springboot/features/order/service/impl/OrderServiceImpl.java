@@ -38,6 +38,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
@@ -118,8 +119,11 @@ public class OrderServiceImpl implements OrderService {
 
         // Khoá map là cặp (sản phẩm, size) vì đó mới là thứ định danh một dòng tồn kho.
         // getProduct().getId() KHÔNG sinh thêm câu SQL: proxy lazy vốn đã giữ sẵn khoá ngoại.
+        // Bản CÓ KHOÁ: đọc số tồn mới nhất và giữ dòng tới lúc commit, nên khách tới sau chờ rồi
+        // thấy số đã trừ và bị báo hết hàng ngay — thay vì bị đá ra ở bước commit sau khi đã đi
+        // hết luồng đặt hàng.
         Map<String, ProductVariantEntity> variants = productVariantRepository
-                .findByProductIdIn(productIds).stream()
+                .findByProductIdInOrderByIdAsc(productIds).stream()
                 .collect(Collectors.toMap(
                         variant -> variantKey(variant.getProduct().getId(), variant.getSize()),
                         Function.identity()));
@@ -151,6 +155,9 @@ public class OrderServiceImpl implements OrderService {
         order.setDiscount(BigDecimal.ZERO);
         order.setTotal(subtotal.add(shippingFee));
         order.setTotalItems(totalItems);
+        // COD trả tiền lúc nhận hàng nên không có hạn; chuyển khoản thì có, và mốc tính từ đây.
+        // Gán đúng một lần, không có đường nào sửa về sau — đó là cơ chế chống tự gia hạn.
+        order.setPaymentDueAt(resolvePaymentDueAt(request.paymentMethod()));
 
         OrderEntity saved = orderRepository.save(order);
 
@@ -230,7 +237,9 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public OrderResponse updateStatus(UUID id, OrderStatusUpdateRequest request) {
-        OrderEntity order = orderRepository.findWithItemsById(id)
+        // Bản CÓ KHOÁ: shop huỷ đơn có thể chạy song song với khách huỷ, tác vụ quét hết hạn
+        // hoặc IPN báo kết quả. Không khoá thì hai đường cùng đọc PENDING và cùng cộng kho.
+        OrderEntity order = orderRepository.findWithItemsByIdForUpdate(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Order not found with id: " + id));
 
         OrderStatus current = order.getStatus();
@@ -257,7 +266,8 @@ public class OrderServiceImpl implements OrderService {
     @Transactional
     public OrderResponse cancelMyOrder(UUID accountId, String orderNumber,
                                        OrderCancelRequest request) {
-        OrderEntity order = orderRepository.findByOrderNumberAndAccountId(orderNumber, accountId)
+        // Bản CÓ KHOÁ — cùng lý do như updateStatus.
+        OrderEntity order = orderRepository.findByOrderNumberAndAccountIdForUpdate(orderNumber, accountId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "Order not found with number: " + orderNumber));
 
@@ -280,19 +290,48 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * Trả hàng về kho khi huỷ đơn.
+     * Trả hàng về kho khi huỷ đơn — <b>tối đa một lần cho mỗi đơn</b>.
      *
      * <p>Nạp biến thể theo lô đúng như lúc đặt hàng, không tra từng dòng. Biến thể có thể đã bị
      * xoá khỏi danh mục sau khi khách đặt — lúc đó không còn chỗ nào để cộng trả, bỏ qua dòng đó
      * chứ không chặn việc huỷ đơn.</p>
+     *
+     * <h2>Hai lớp chặn cộng kho hai lần</h2>
+     * <ol>
+     *   <li><b>Khoá bi quan trên đơn</b> ({@code findWithItemsByIdForUpdate} /
+     *       {@code findByOrderNumberAndAccountIdForUpdate}) — chặn hai đường <b>đang chạy đồng
+     *       thời</b>.</li>
+     *   <li><b>Cờ {@link OrderEntity#getStockRestored()}</b> — chặn đường tới <b>sau</b>, kể cả khi
+     *       giao dịch trước đã commit và khoá đã nhả. Cờ này một chiều: bật rồi không tắt.</li>
+     * </ol>
+     *
+     * <p>Lớp thứ ba là khoá bi quan trên {@code product_variants} — không phải để chặn cộng hai
+     * lần mà để chống mất cập nhật khi cộng số lượng.</p>
+     *
+     * <p><b>Hàm này chạy TRONG cùng giao dịch với việc đổi trạng thái đơn</b>, cố ý không dời sang
+     * {@code afterCommit}: dời ra ngoài thì hai việc không còn nguyên tử (đơn đã huỷ mà cộng kho
+     * lỗi = huỷ đơn nhưng mất hàng), và khoá bi quan cũng đã nhả nên lớp chặn thứ nhất mất tác
+     * dụng. {@code afterCommit} chỉ dành cho việc nằm ngoài database, như gửi mail.</p>
+     *
+     * @return {@code false} nếu đơn này đã hoàn kho từ trước (không làm gì), {@code true} nếu lần
+     *         này thực sự cộng kho
      */
-    private void restoreStock(OrderEntity order) {
+    private boolean restoreStock(OrderEntity order) {
+        if (Boolean.TRUE.equals(order.getStockRestored())) {
+            return false;
+        }
+
+        // Đánh dấu TRƯỚC khi cộng. Cùng một giao dịch nên hoặc cả hai cùng commit, hoặc cả hai
+        // cùng rollback — nhưng đặt trước để đọc code là thấy ngay thứ tự, và để nếu bước cộng
+        // ném lỗi thì cờ cũng không được lưu lại.
+        order.setStockRestored(Boolean.TRUE);
+
         Set<UUID> productIds = order.getItems().stream()
                 .map(item -> item.getProduct().getId())
                 .collect(Collectors.toSet());
 
         Map<String, ProductVariantEntity> variants = productVariantRepository
-                .findByProductIdIn(productIds).stream()
+                .findByProductIdInOrderByIdAsc(productIds).stream()
                 .collect(Collectors.toMap(
                         variant -> variantKey(variant.getProduct().getId(), variant.getSize()),
                         Function.identity()));
@@ -303,6 +342,7 @@ public class OrderServiceImpl implements OrderService {
                 variant.setStockQuantity(variant.getStockQuantity() + item.getQuantity());
             }
         }
+        return true;
     }
 
     @Override
@@ -312,16 +352,15 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * Khoá định danh một dòng tồn kho: một sản phẩm có nhiều size, phải đủ cả cặp mới trỏ đúng
-     * một bản ghi. Dùng chung cho cả việc gộp dòng trùng trong giỏ lẫn việc tra biến thể đã nạp.
-     */
-    /**
      * Hẹn gửi mail xác nhận SAU KHI giao dịch commit thành công.
      *
-     * <p><b>Vì sao không gọi thẳng:</b> {@code product_variants} có {@code @Version}, nên hai
-     * khách cùng mua món cuối cùng sẽ làm một giao dịch ném {@code OptimisticLockException}
-     * <b>đúng lúc commit</b> — sau khi thân hàm này đã chạy xong. Gọi thẳng thì đơn bị huỷ bỏ mà
-     * khách vẫn nhận được mail xác nhận cho một đơn không tồn tại.</p>
+     * <p><b>Vì sao không gọi thẳng:</b> giao dịch vẫn có thể hỏng <b>đúng lúc commit</b> — sau khi
+     * thân hàm đăng ký đã chạy xong — ví dụ lỗi ràng buộc chỉ phát hiện muộn lúc flush. Gọi thẳng
+     * thì đơn bị huỷ bỏ mà khách vẫn nhận được mail xác nhận cho một đơn không tồn tại.</p>
+     *
+     * <p>(Chú thích cũ kể cảnh hai khách cùng mua món cuối. Từ khi luồng đặt hàng khoá bi quan dòng
+     * tồn kho, cảnh đó không còn: người tới sau chờ rồi bị báo hết hàng ngay, chứ không bị đá ra ở
+     * bước commit. Lý do giữ {@code afterCommit} vẫn đúng, chỉ ví dụ cũ là không còn.)</p>
      *
      * <p><b>Vì sao đăng ký ở đây chứ không trong {@code BrevoMailClient}:</b> {@code @Async} đi
      * qua proxy, mà gọi từ chính bên trong bean đó thì proxy bị bỏ qua và mail sẽ chạy đồng bộ,
@@ -346,6 +385,10 @@ public class OrderServiceImpl implements OrderService {
         });
     }
 
+    /**
+     * Khoá định danh một dòng tồn kho: một sản phẩm có nhiều size, phải đủ cả cặp mới trỏ đúng một
+     * bản ghi. Dùng chung cho việc gộp dòng trùng trong giỏ và việc tra biến thể đã nạp.
+     */
     private String variantKey(UUID productId, ProductSize size) {
         return productId + "_" + size;
     }
@@ -391,6 +434,23 @@ public class OrderServiceImpl implements OrderService {
                 .quantity(request.quantity())
                 .lineTotal(unitPrice.multiply(BigDecimal.valueOf(request.quantity())))
                 .build();
+    }
+
+    /**
+     * Hạn thanh toán của đơn: chuyển khoản thì có, COD thì không.
+     *
+     * <p>Mốc tính là <b>lúc đơn được tạo</b>. Khách đặt lúc 10:00 rồi 10:12 mới mở link thì vẫn chỉ
+     * còn tới 10:15 — cố ý, vì hàng đã bị giữ từ 10:00.</p>
+     *
+     * <p>Thời lượng đọc từ {@code app.order.payment-timeout} ({@code ORDER_PAYMENT_TIMEOUT}) do
+     * {@link OrderProperties} quản, <b>không</b> đọc từ cấu hình VNPay: hạn thanh toán là luật của
+     * đơn hàng, không phải của cổng thanh toán nào.</p>
+     */
+    private Instant resolvePaymentDueAt(PaymentMethod paymentMethod) {
+        if (paymentMethod != PaymentMethod.BANK_TRANSFER) {
+            return null;
+        }
+        return Instant.now().plus(orderProperties.paymentTimeout());
     }
 
     /**
