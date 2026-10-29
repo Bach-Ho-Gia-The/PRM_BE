@@ -5,11 +5,13 @@ import com.structure.springboot.common.exception.ErrorCode;
 import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.account.entity.AccountEntity;
 import com.structure.springboot.features.account.repository.AccountRepository;
+import com.structure.springboot.features.order.config.OrderExpiryProperties;
 import com.structure.springboot.features.order.config.OrderProperties;
 import com.structure.springboot.features.order.dto.request.OrderItemRequest;
 import com.structure.springboot.features.order.dto.request.OrderCancelRequest;
 import com.structure.springboot.features.order.dto.request.OrderRequest;
 import com.structure.springboot.features.order.dto.request.OrderStatusUpdateRequest;
+import com.structure.springboot.features.order.dto.response.OrderExpirySummary;
 import com.structure.springboot.features.order.dto.response.OrderResponse;
 import com.structure.springboot.features.order.dto.response.OrderSummaryResponse;
 import com.structure.springboot.features.notification.service.NotificationService;
@@ -20,9 +22,12 @@ import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.order.service.OrderExpiryCooldown;
 import com.structure.springboot.features.order.service.OrderService;
 import com.structure.springboot.features.order.specification.OrderSpecifications;
+import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
 import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.enums.VnpayQueryVerdict;
 import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -30,6 +35,10 @@ import com.structure.springboot.features.product.enums.ProductSize;
 import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -37,6 +46,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
@@ -57,6 +70,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class OrderServiceImpl implements OrderService {
 
     /**
@@ -80,6 +94,14 @@ public class OrderServiceImpl implements OrderService {
             OrderStatus.CANCELLED, EnumSet.noneOf(OrderStatus.class)
     );
 
+    /**
+     * Lý do huỷ ghi lên đơn khi hệ thống tự huỷ vì quá hạn.
+     *
+     * <p>Khác {@code null} (shop huỷ) và khác lý do khách tự nhập: khách đọc đơn của mình phải phân
+     * biệt được "tôi huỷ" với "hệ thống huỷ vì tôi không thanh toán".</p>
+     */
+    private static final String EXPIRY_CANCEL_REASON = "Quá hạn thanh toán";
+
     private final SecureRandom random = new SecureRandom();
 
     private final OrderRepository orderRepository;
@@ -91,6 +113,18 @@ public class OrderServiceImpl implements OrderService {
     private final BrevoMailClient brevoMailClient;
     private final OrderProperties orderProperties;
     private final PaymentService paymentService;
+    private final OrderExpiryProperties expiryProperties;
+    private final OrderExpiryCooldown cooldown;
+
+    /**
+     * Chính bean này, lấy từ container.
+     *
+     * <p>Cần để gọi {@link #settleExpiredOrder} <b>qua proxy</b> — gọi thẳng tên hàm trong cùng đối
+     * tượng thì {@code @Transactional} bị bỏ qua và không có giao dịch nào được mở. Dùng
+     * {@link ObjectProvider} chứ không inject {@code OrderService} trực tiếp để tránh vòng phụ thuộc
+     * lúc khởi tạo; {@code getObject()} chỉ được gọi lúc chạy, khi bean đã sẵn sàng.</p>
+     */
+    private final ObjectProvider<OrderService> self;
 
     @Override
     @Transactional
@@ -304,6 +338,138 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * Quét đơn quá hạn thanh toán — xem javadoc ở {@link OrderService#expireOverdueOrders}.
+     *
+     * <h2>Vì sao hàm này KHÔNG {@code @Transactional}</h2>
+     *
+     * <p>Cố ý: nó gọi VNPay cho từng đơn. Bọc cả hàm trong một giao dịch nghĩa là một giao dịch
+     * database sống suốt thời gian chờ mạng — với một trăm đơn, mỗi đơn tới mười giây, đó là một
+     * giao dịch mở hàng phút và giữ khoá trên mọi dòng nó đã chạm. Ngoài ra giao dịch lồng vào trong
+     * cũng chẳng có tác dụng gì: mỗi đơn đã có giao dịch riêng ở chặng chốt, do phương thức public
+     * của chính bean này gọi qua proxy.</p>
+     *
+     * <h2>Vì sao gọi {@code self.settleExpiredOrder} chứ không gọi thẳng tên hàm</h2>
+     *
+     * <p>{@code @Transactional} của Spring hoạt động bằng proxy: gọi một phương thức trong cùng một
+     * đối tượng thì <b>không</b> đi qua proxy, nên annotation bị bỏ qua và không có giao dịch nào
+     * được mở. Dùng {@code ObjectProvider<OrderService>} để lấy chính bean từ container rồi gọi qua
+     * đó là cách duy nhất giữ được giao dịch cho từng đơn mà không phải tách sang một bean khác — mà
+     * tách sang bean khác thì lại sinh vòng phụ thuộc, vì bean mới cần chính service này để huỷ đơn.
+     * </p>
+     */
+    @Override
+    public OrderExpirySummary expireOverdueOrders(Instant now) {
+        // Chặn cận dưới: đơn quá hạn quá lâu đã được xử lý ở những lượt rất cũ. Sau khi ứng dụng
+        // khởi động lại, bộ đếm trong bộ nhớ mất sạch — không có cận dưới thì mọi đơn bị bỏ quên từ
+        // nhiều tháng trước sẽ ùa vào lượt quét đầu tiên.
+        Instant earliestDueAt = now.minus(Duration.ofHours(expiryProperties.maxAgeHours()));
+
+        Pageable page = PageRequest.of(0, expiryProperties.batchSize(),
+                Sort.by(Sort.Direction.ASC, "paymentDueAt"));
+
+        List<OrderEntity> candidates = orderRepository
+                .findByStatusAndPaymentDueAtLessThanEqualAndPaymentDueAtGreaterThanEqual(
+                        OrderStatus.PENDING, now, earliestDueAt, page);
+
+        if (candidates.isEmpty()) {
+            return OrderExpirySummary.empty();
+        }
+
+        int cancelled = 0;
+        int paid = 0;
+        int unclear = 0;
+
+        for (OrderEntity candidate : candidates) {
+            // Chặng 2: hỏi VNPay, KHÔNG giữ khoá. Bộ đếm quyết định đơn này đã tới lượt hỏi lại chưa.
+            if (!cooldown.tryAcquire(candidate.getId(), now)) {
+                unclear++;
+                continue;
+            }
+
+            VnpayQueryVerdict verdict = ask(paymentService.queryVnpayForOrder(candidate));
+
+            if (verdict == VnpayQueryVerdict.PAID) {
+                cooldown.forget(candidate.getId());
+                paid++;
+                continue;
+            }
+
+            // Không rõ thì không đụng gì. Đây là nhánh quan trọng nhất của cả hàm: UNKNOWN không
+            // phải FAILED, và mọi thứ không chắc chắn đều rơi vào đây.
+            if (!verdict.allowsCancel()) {
+                if (cooldown.isExhausted(candidate.getId())) {
+                    log.warn("Order {} still unclear after {} VNPay queries — giving up, check manually",
+                            candidate.getOrderNumber(), cooldown.failures(candidate.getId()));
+                }
+                unclear++;
+                continue;
+            }
+
+            // Chặng 3: chốt trong một giao dịch ngắn, có khoá, và KIỂM LẠI (xem settleExpiredOrder).
+            if (self.getObject().settleExpiredOrder(candidate.getId(), verdict, now)) {
+                cooldown.forget(candidate.getId());
+                cancelled++;
+            } else {
+                // Đơn đã đổi trạng thái trong lúc chờ VNPay (thường là IPN vừa xác nhận thanh
+                // toán), hoặc đã có payment PAID. Không huỷ, và không còn gì phải hỏi lại.
+                cooldown.forget(candidate.getId());
+                paid++;
+            }
+        }
+
+        return new OrderExpirySummary(candidates.size(), cancelled, paid, unclear);
+    }
+
+    /**
+     * Chặng chốt: nạp lại đơn <b>có khoá</b>, kiểm lại lần cuối, rồi huỷ nếu còn đủ điều kiện.
+     *
+     * <p>Chạy trong <b>một giao dịch riêng</b> cho mỗi đơn. Giao dịch chỉ sống trong khoảng đọc–ghi
+     * ngắn, không bao gồm câu hỏi VNPay (đã xong ở chặng trước).</p>
+     *
+     * <p><b>Ba điều kiện kiểm lại, cả ba đều cần:</b></p>
+     * <ol>
+     *   <li>Đơn còn tồn tại — có thể đã bị xoá.</li>
+     *   <li>Đơn còn {@code PENDING} — giữa chặng 2 và chặng 3, khách có thể đã huỷ.</li>
+     *   <li>Đơn <b>chưa có payment {@code PAID}</b> — đây là lớp chặn cuối. VNPay có thể trả lời
+     *       "thất bại" cho lần thử mới nhất trong khi lần thử trước đã thu được tiền (khách thử hai
+     *       lần). Tin câu trả lời của cổng mà bỏ qua dữ liệu của chính mình là huỷ đơn đã trả tiền.
+     *       </li>
+     * </ol>
+     *
+     * @param verdict lý do huỷ, chỉ để ghi log — quyết định huỷ hay không đã chốt ở chặng 2
+     * @return {@code true} nếu lần này thực sự huỷ đơn
+     */
+    @Override
+    @Transactional
+    public boolean settleExpiredOrder(UUID orderId, VnpayQueryVerdict verdict, Instant now) {
+        OrderEntity order = orderRepository.findForUpdateWithItemsById(orderId).orElse(null);
+
+        if (order == null || order.getStatus() != OrderStatus.PENDING) {
+            return false;
+        }
+
+        // Kiểm "đã trả tiền" bằng PAYMENT, không bằng orders.paidAt: paidAt là trường cache trên
+        // đơn, có thể null dù payment đã PAID. Dựa vào nó là quyết định huỷ dựa trên dữ liệu phụ.
+        if (paymentService.hasPaidPayment(order.getId())) {
+            log.warn("Order {} has a PAID payment — not expiring despite VNPay verdict {}",
+                    order.getOrderNumber(), verdict);
+            return false;
+        }
+
+        log.info("Order {} expired (VNPay verdict {}), cancelling and restoring stock",
+                order.getOrderNumber(), verdict);
+        markExpired(order);
+        return true;
+    }
+
+    /** Đọc verdict mà không ném: service đã hứa không ném, nhưng một tầng nữa không thừa. */
+    private VnpayQueryVerdict ask(VnpayQueryResult result) {
+        return result == null || result.verdict() == null
+                ? VnpayQueryVerdict.UNKNOWN
+                : result.verdict();
+    }
+
+    /**
      * Map đơn sang DTO, kèm thời điểm đã trả tiền lấy từ feature payment.
      *
      * <p>Gom về một chỗ vì có nhiều đường trả {@code OrderResponse}; để mỗi nơi tự gọi mapper thì
@@ -334,11 +500,46 @@ public class OrderServiceImpl implements OrderService {
      * @param cancelReason lý do huỷ; {@code null} với đơn do shop huỷ (giữ nguyên hành vi cũ)
      */
     private OrderResponse markCancelled(OrderEntity order, String cancelReason) {
+        return closeAndRestore(order, cancelReason, false);
+    }
+
+    /**
+     * Cửa huỷ thứ ba: <b>đơn quá hạn thanh toán</b>. Khác {@link #markCancelled} đúng một điểm —
+     * bản ghi thanh toán đóng bằng {@code EXPIRED} thay vì {@code CANCELLED}.
+     *
+     * <p><b>Vì sao phải khác:</b> "khách đổi ý" và "quá hạn" là hai chuyện hoàn toàn khác nhau khi
+     * đối soát với VNPay và khi đọc lịch sử của khách. Đóng payment thành {@code CANCELLED} cho cả
+     * hai thì mất luôn khả năng phân biệt, và không có cách nào lấy lại — thông tin bị ghi đè chứ
+     * không bị thiếu.</p>
+     *
+     * <p>Vẫn đi qua <b>cùng một hàm</b> với hai cửa kia: hoàn kho, đổi trạng thái, sinh khoản hoàn,
+     * báo khách — bốn việc đó phải xảy ra y hệt nhau. Chỉ trạng thái đóng payment là tham số.</p>
+     */
+    private OrderResponse markExpired(OrderEntity order) {
+        return closeAndRestore(order, EXPIRY_CANCEL_REASON, true);
+    }
+
+    /**
+     * Phần chung của mọi đường huỷ đơn.
+     *
+     * <p><b>Cửa duy nhất ghi {@code CANCELLED}</b> — ba lối vào (shop huỷ, khách huỷ, hết hạn) khác
+     * nhau đúng một tham số. Tách riêng như vậy là để không có đường nào quên một trong bốn việc:
+     * trả hàng về kho, đổi trạng thái, đóng payment, sinh khoản hoàn nếu đã thu tiền.</p>
+     *
+     * @param expired {@code true} nếu huỷ vì quá hạn thanh toán — đóng payment bằng {@code EXPIRED};
+     *                {@code false} nếu huỷ do người (khách hoặc shop) — đóng bằng {@code CANCELLED}
+     */
+    private OrderResponse closeAndRestore(OrderEntity order, String cancelReason, boolean expired) {
         restoreStock(order);
         order.setStatus(OrderStatus.CANCELLED);
         order.setCancelReason(cancelReason);
         // Cùng giao dịch: đơn huỷ mà payment không đóng được thì cả hai cùng rollback.
-        paymentService.releaseForOrderCancel(order);
+        // expireForOrder đã có sẵn từ CK-2 và chưa ai gọi — đây chính là chỗ dùng nó.
+        if (expired) {
+            paymentService.expireForOrder(order);
+        } else {
+            paymentService.releaseForOrderCancel(order);
+        }
         // Đơn đã trả tiền thì phải có khoản hoàn — luật 7: huỷ đơn khác với đã hoàn tiền.
         // Hàm tự bỏ qua khi đơn chưa từng được trả tiền, nên không cần rẽ nhánh ở đây.
         paymentService.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);

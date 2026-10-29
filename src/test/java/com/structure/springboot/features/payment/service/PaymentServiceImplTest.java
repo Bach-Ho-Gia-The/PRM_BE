@@ -41,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -61,10 +62,13 @@ class PaymentServiceImplTest {
     private final UUID me = UUID.randomUUID();
     private static final String ORDER_NO = "LBVN-2610-A7K2";
 
+    private final com.structure.springboot.features.payment.service.VnpayQueryService vnpayQueryService =
+            mock(com.structure.springboot.features.payment.service.VnpayQueryService.class);
+
     @BeforeEach
     void setUp() {
         PaymentMapper mapper = Mappers.getMapper(PaymentMapper.class);
-        service = new PaymentServiceImpl(payments, refunds, orders, mapper, urlBuilder);
+        service = new PaymentServiceImpl(payments, refunds, orders, mapper, urlBuilder, vnpayQueryService);
     }
 
     private OrderEntity order(PaymentMethod method, OrderStatus status, Instant dueAt) {

@@ -118,4 +118,37 @@ class VnpayIpnAcknowledgementTest {
 
         assertEquals(200, response.getStatusCode().value());
     }
+
+    /**
+     * Controller nay chi duoc co DUNG HAI mapping, va ca hai deu la GET.
+     *
+     * <p>Vi sao: moi endpoint trong class nay nam duoi {@code /vnpay/**}, tuc la <b>cong khai</b>.
+     * Them mot {@code @PostMapping} hay mot method thu ba la mo them mot duong khong can dang nhap —
+     * va khong co gi bao, vi no van bien dich va van chay. Test nay buoc nguoi them phai sua o day,
+     * tuc la phai doc lai ly do vi sao whitelist duoc mo.</p>
+     */
+    @Test
+    void theControllerExposesExactlyTwoGetEndpoints() {
+        java.util.List<String> mappings = new java.util.ArrayList<>();
+
+        for (var method : VnpayCallbackController.class.getDeclaredMethods()) {
+            var get = method.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);
+            if (get != null) {
+                mappings.add("GET " + String.join(",", get.value()));
+            }
+            for (var annotation : method.getAnnotations()) {
+                String name = annotation.annotationType().getSimpleName();
+                if (name.endsWith("Mapping") && !"GetMapping".equals(name)) {
+                    throw new AssertionError("Chi duoc phep GET, nhung " + method.getName()
+                            + " co " + name + " — endpoint /vnpay/** la cong khai");
+                }
+            }
+        }
+
+        mappings.sort(String::compareTo);
+        assertEquals(
+                java.util.List.of("GET /vnpay/ipn", "GET /vnpay/return"),
+                mappings,
+                "Tap mapping cua controller da thay doi — doc lai javadoc lop truoc khi sua");
+    }
 }

@@ -12,7 +12,9 @@ import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlRes
 import com.structure.springboot.features.payment.entity.OrderRefundEntity;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
 import com.structure.springboot.features.payment.enums.PaymentStatus;
+import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
 import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.service.VnpayQueryService;
 import com.structure.springboot.features.payment.enums.RefundStatus;
 import com.structure.springboot.features.payment.mapper.PaymentMapper;
 import com.structure.springboot.features.payment.repository.OrderRefundRepository;
@@ -37,6 +39,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final OrderRepository orderRepository;
     private final PaymentMapper paymentMapper;
     private final VnpayPaymentUrlBuilder vnpayPaymentUrlBuilder;
+    private final VnpayQueryService vnpayQueryService;
 
     @Override
     @Transactional
@@ -133,6 +136,36 @@ public class PaymentServiceImpl implements PaymentService {
         // Finder CÓ khoá, không phải findById — xem javadoc ở interface. Đừng "toi ưu" thành
         // findById: mất khoá là mở lại đúng khe tranh chấp mà hàm này sinh ra để bịt.
         return orderRepository.findForUpdateWithItemsById(orderId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public VnpayQueryResult queryVnpayForOrder(OrderEntity order) {
+        if (order == null || order.getId() == null) {
+            return VnpayQueryResult.unknown("No order to query");
+        }
+
+        // "Lần thử mới nhất" là bản ghi khách vừa thao tác. Nếu lần thử trước đó đã thu được tiền
+        // thì chặng chốt của tác vụ quét sẽ thấy qua hasPaidPayment — câu trả lời ở đây không phải
+        // tiếng nói cuối cùng.
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .map(vnpayQueryService::query)
+                .orElseGet(() -> VnpayQueryResult.unknown("Order has no payment attempt"));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasPaidPayment(UUID orderId) {
+        if (orderId == null) {
+            return false;
+        }
+        // Derived query CÓ SẴN từ CK-2, không thêm finder mới: existsByOrderIdAndStatus sinh ra
+        // đúng câu "có tồn tại payment PAID của đơn này không", và dùng index sẵn có trên order_id.
+        //
+        // Cố ý dùng exists...ByStatus chứ không lấy lần thử mới nhất rồi so trạng thái: khách có
+        // thể thử nhiều lần, và câu hỏi đúng KHÔNG phải "lần gần nhất có PAID không" mà là "đã có
+        // lần nào PAID chưa". Lần thử sau cùng có thể FAILED trong khi lần trước đã thu tiền.
+        return paymentRepository.existsByOrderIdAndStatus(orderId, PaymentStatus.PAID);
     }
 
     @Override

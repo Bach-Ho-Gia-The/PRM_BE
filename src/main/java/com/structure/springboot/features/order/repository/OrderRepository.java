@@ -2,6 +2,7 @@ package com.structure.springboot.features.order.repository;
 
 import com.structure.springboot.features.order.entity.OrderEntity;
 import jakarta.persistence.LockModeType;
+import com.structure.springboot.features.order.enums.OrderStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -10,6 +11,8 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -89,6 +92,39 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
     Optional<OrderEntity> findForUpdateByOrderNumberAndAccountId(String orderNumber, UUID accountId);
 
     /** Danh sách đơn của tôi. KHÔNG fetch items — màn hình danh sách không dùng tới. */
+    /**
+     * Đơn quá hạn thanh toán, dùng cho tác vụ quét hết hạn.
+     *
+     * <p><b>Ba điều kiện, và cả ba đều cần:</b></p>
+     * <ol>
+     *   <li>{@code status = PENDING} — đơn đã xác nhận, đang giao hay đã huỷ thì không còn liên quan
+     *       tới hạn thanh toán.</li>
+     *   <li>{@code paymentDueAt <= now} — đã quá hạn. Đơn COD có {@code paymentDueAt = null} nên
+     *       <b>tự động bị loại</b>: phép so sánh với {@code null} không bao giờ đúng. Đó là hành vi
+     *       đúng chứ không phải sơ suất — COD không có hạn.</li>
+     *   <li>{@code paymentDueAt >= earliestDueAt} — <b>cận dưới</b>. Đơn quá hạn từ nhiều ngày trước
+     *       thì đã được xử lý ở những lượt quét rất cũ; quét lại chúng mỗi phút là gọi VNPay vô ích.
+     *       Cận dưới cũng chặn trường hợp xấu nhất sau khi khôi phục dữ liệu cũ.</li>
+     * </ol>
+     *
+     * <p><b>Vì sao là derived query, không {@code @Query}:</b> cả ba điều kiện đều là so sánh trên
+     * cột của chính entity, không cần join, không cần {@code coalesce} hay biểu thức SQL nào. Viết
+     * derived thì Spring Data sinh câu SQL và kiểm luôn tên thuộc tính lúc khởi động.</p>
+     *
+     * <p><b>Không {@code @EntityGraph} ở đây, có chủ ý:</b> lượt quét chỉ cần mã đơn để quyết định;
+     * dòng hàng chỉ cần khi thực sự huỷ đơn, và chặng chốt nạp lại đơn <b>kèm dòng hàng và kèm
+     * khoá</b> bằng {@link #findForUpdateWithItemsById}. Nạp kèm ở bước quét là nạp hàng nghìn dòng
+     * cho những đơn có thể không bao giờ bị huỷ.</p>
+     *
+     * @param status        trạng thái cần lọc, luôn là {@code PENDING}
+     * @param now           mốc "bây giờ" do người gọi truyền, không dùng {@code CURRENT_TIMESTAMP} —
+     *                      xem javadoc {@code OrderService.expireOverdueOrders}
+     * @param earliestDueAt cận dưới của hạn thanh toán
+     * @param pageable      giới hạn số đơn mỗi lượt và thứ tự ưu tiên
+     */
+    List<OrderEntity> findByStatusAndPaymentDueAtLessThanEqualAndPaymentDueAtGreaterThanEqual(
+            OrderStatus status, Instant now, Instant earliestDueAt, Pageable pageable);
+
     Page<OrderEntity> findByAccountId(UUID accountId, Pageable pageable);
 
     /**

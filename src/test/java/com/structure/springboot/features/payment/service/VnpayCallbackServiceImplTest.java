@@ -374,4 +374,119 @@ class VnpayCallbackServiceImplTest {
 
         verify(paymentService, never()).requestRefundIfPaid(any(), any());
     }
+
+    // ══════════════ Tang 4: ma tran day du ══════════════
+
+    /**
+     * Di HET tich Descartes: 5 trang thai payment x 2 trang thai don x 2 ma phan hoi = 20 to hop.
+     *
+     * <p>Vi sao can test nay du da co test le tung ca: no la <b>luoi an toan cho tuong lai</b>. Neu
+     * ai them mot {@code PaymentStatus} moi (vi du {@code REFUNDED}), test nay buoc nguoi do phai
+     * tra loi "trang thai moi thi IPN lam gi" — thay vi de no roi vao nhanh {@code else} nao do va
+     * sai mot cach im lang. Cac test le khong lam duoc viec do vi chung chi kiem nhung ca da biet.</p>
+     *
+     * <p>Bang ky vong duoc viet Thanh DU LIEU, khong phai thanh if: doc duoc nhu mot bang quyet
+     * dinh, va khi sai thi thong bao chi ra dung o nao.</p>
+     */
+    @Test
+    void theFullDecisionMatrixHolds() {
+        // (payment truoc, don) -> (RspCode, payment sau, co refund)
+        record Expected(String rspCode, PaymentStatus next, boolean refunds) { }
+
+        Map<String, Expected> expected = new LinkedHashMap<>();
+
+        // ---- vnp_ResponseCode = 00 ----
+        expected.put(PaymentStatus.PENDING + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.PENDING + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, true));
+        expected.put(PaymentStatus.PAID + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.PAID + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.FAILED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.FAILED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, true));
+        expected.put(PaymentStatus.EXPIRED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.EXPIRED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, true));
+        expected.put(PaymentStatus.CANCELLED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, false));
+        expected.put(PaymentStatus.CANCELLED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.PAID, true));
+
+        // ---- vnp_ResponseCode != 00 (24) ----
+        expected.put("24:" + PaymentStatus.PENDING + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.FAILED, false));
+        expected.put("24:" + PaymentStatus.PENDING + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_SUCCESS, PaymentStatus.FAILED, false));
+        expected.put("24:" + PaymentStatus.PAID + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.PAID, false));
+        expected.put("24:" + PaymentStatus.PAID + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.PAID, false));
+        expected.put("24:" + PaymentStatus.FAILED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.FAILED, false));
+        expected.put("24:" + PaymentStatus.FAILED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.FAILED, false));
+        expected.put("24:" + PaymentStatus.EXPIRED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.EXPIRED, false));
+        expected.put("24:" + PaymentStatus.EXPIRED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.EXPIRED, false));
+        expected.put("24:" + PaymentStatus.CANCELLED + "|" + OrderStatus.PENDING,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.CANCELLED, false));
+        expected.put("24:" + PaymentStatus.CANCELLED + "|" + OrderStatus.CANCELLED,
+                new Expected(VnpayIpnResponse.RSP_ALREADY_CONFIRMED, PaymentStatus.CANCELLED, false));
+
+        assertEquals(20, expected.size(), "ma tran phai phu du 20 to hop");
+
+        // Moi to hop chay tren mot fixture MOI: dung lai fixture cu se lam to hop truoc anh huong
+        // to hop sau, va thu tu lai tro thanh mot bien an.
+        for (Map.Entry<String, Expected> entry : expected.entrySet()) {
+            String key = entry.getKey();
+            Expected want = entry.getValue();
+
+            String code = key.startsWith("24:") ? "24" : "00";
+            String state = key.startsWith("24:") ? key.substring(3) : key;
+            String[] parts = state.split("\\|");
+            PaymentStatus from = PaymentStatus.valueOf(parts[0]);
+            OrderStatus orderStatus = OrderStatus.valueOf(parts[1]);
+
+            // Fixture moi cho tung to hop.
+            payment.setId(UUID.randomUUID());
+            payment.setStatus(from);
+            payment.setPaidAt(null);
+            order.setStatus(orderStatus);
+            when(payments.findByTxnRef(TXN_REF)).thenReturn(Optional.of(payment));
+            when(paymentService.findOrderForConfirmation(orderId)).thenReturn(Optional.of(order));
+
+            // Chi stub duong hoan tien o nhung to hop CO hoan tien. Stub thua se bi Mockito strict
+            // bat (UnnecessaryStubbingException) — va do la dieu tot: no chung minh ma tran dang
+            // thuc su di theo tung nhanh, khong phai nhanh nao cung chay het.
+            if (want.refunds()) {
+                when(refunds.findByOrderId(orderId)).thenReturn(Optional.empty());
+                when(refunds.save(any(OrderRefundEntity.class)))
+                        .thenAnswer(call -> call.getArgument(0));
+            }
+            // Xoa vet goi cua to hop truoc, de verify() chi dem trong to hop nay.
+            org.mockito.Mockito.clearInvocations(refunds);
+
+            VnpayIpnResponse outcome = service.handleIpn(ipn(code));
+
+            String where = "to hop " + key + " (code=" + code + ")";
+            assertEquals(want.rspCode(), outcome.rspCode(), "RspCode sai o " + where);
+            assertEquals(want.next(), payment.getStatus(), "trang thai payment sai o " + where);
+
+            if (want.refunds()) {
+                verify(refunds).save(any(OrderRefundEntity.class));
+            } else {
+                verify(refunds, never()).save(any(OrderRefundEntity.class));
+            }
+
+            // Don PENDING thi KHONG BAO GIO bi doi boi IPN (luat 4). Don CANCELLED thi giu nguyen.
+            assertEquals(orderStatus, order.getStatus(),
+                    "IPN khong duoc doi trang thai don, sai o " + where);
+        }
+    }
 }

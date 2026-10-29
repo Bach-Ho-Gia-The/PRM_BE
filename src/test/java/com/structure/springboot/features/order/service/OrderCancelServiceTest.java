@@ -11,6 +11,7 @@ import com.structure.springboot.features.order.entity.OrderItemEntity;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.enums.RefundReason;
 import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
@@ -20,6 +21,8 @@ import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
 import com.structure.springboot.features.order.config.OrderProperties;
 import com.structure.springboot.infrastructure.external.brevo.BrevoMailClient;
+import com.structure.springboot.features.order.config.OrderExpiryProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,6 +34,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.time.Duration;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +44,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 /**
@@ -62,11 +68,27 @@ class OrderCancelServiceTest {
 
     private final UUID me = UUID.randomUUID();
 
+
+    private final OrderExpiryCooldown cooldown = mock(OrderExpiryCooldown.class);
+    private final OrderExpiryProperties expiryProperties = new OrderExpiryProperties(
+            Duration.ofMinutes(1), Duration.ofSeconds(30), Duration.ofMinutes(5), 100, 5, 24);
+
+    @SuppressWarnings("unchecked")
+    private final ObjectProvider<OrderService> provider = mockProvider();
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<OrderService> mockProvider() {
+        ObjectProvider<OrderService> provider = mock(ObjectProvider.class);
+        lenient().when(provider.getObject()).thenReturn(mock(OrderService.class));
+        return provider;
+    }
+
     @BeforeEach
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, orderProperties, payments);
+                notifications, mail, orderProperties, payments,
+                expiryProperties, cooldown, provider);
     }
 
     private ProductEntity product() {
@@ -326,6 +348,46 @@ class OrderCancelServiceTest {
         verify(payments).releaseForOrderCancel(entity);
         // Va hang van phai tra kho — huy don da tra tien thi hang ve kho, tien thi cho hoan.
         assertEquals(Boolean.TRUE, entity.getStockRestored());
+    }
+
+    /**
+     * HUY DON DA TRA TIEN PHAI SINH KHOAN HOAN — va phai la ly do ORDER_CANCELLED.
+     *
+     * <p>Test nay lap mot lo hong that: truoc do chi assert {@code releaseForOrderCancel}. Neu ai xoa
+     * dong {@code requestRefundIfPaid} trong {@code markCancelled} thi ca bo test van xanh, trong khi
+     * don da tra tien bi huy se KHONG co khoan hoan nao — mat tien khach ma khong co loi nao bao.</p>
+     */
+    @Test
+    void cancellingAPaidOrderRecordsARefundWithTheCancelReason() {
+        ProductEntity product = product();
+        OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.S, 1));
+        when(orders.findForUpdateByOrderNumberAndAccountId("LBVN-2610-A7K2", me))
+                .thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
+                .thenReturn(List.of(variant(product, ProductSize.S, 5)));
+        echoSave();
+
+        service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
+
+        verify(payments).requestRefundIfPaid(entity, RefundReason.ORDER_CANCELLED);
+    }
+
+    /** Don chua tra tien thi van goi — ham do tu bo qua. Don gian hon la re nhanh o day. */
+    @Test
+    void cancellingAnUnpaidOrderStillCallsTheRefundHook() {
+        ProductEntity product = product();
+        OrderEntity entity = order(OrderStatus.PENDING, item(product, ProductSize.M, 1));
+        when(orders.findForUpdateByOrderNumberAndAccountId("LBVN-2610-A7K2", me))
+                .thenReturn(Optional.of(entity));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection()))
+                .thenReturn(List.of(variant(product, ProductSize.M, 3)));
+        echoSave();
+
+        service.cancelMyOrder(me, "LBVN-2610-A7K2", null);
+
+        // Chinh viec "luon goi" moi la thu duoc kiem: quyet dinh co hoan hay khong nam trong
+        // PaymentService, khong phai trong OrderService.
+        verify(payments).requestRefundIfPaid(entity, RefundReason.ORDER_CANCELLED);
     }
 
     /** Don khong huy duoc thi khong duoc dong payment. */

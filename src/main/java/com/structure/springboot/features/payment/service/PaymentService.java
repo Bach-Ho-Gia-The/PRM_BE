@@ -4,6 +4,7 @@ import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
+import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
 import com.structure.springboot.features.payment.enums.RefundReason;
 
 import java.time.Instant;
@@ -127,4 +128,33 @@ public interface PaymentService {
      * @return đơn đã khoá, hoặc rỗng nếu không tồn tại
      */
     Optional<OrderEntity> findOrderForConfirmation(UUID orderId);
+
+    /**
+     * Đơn này đã có lần thử thanh toán nào <b>thu được tiền</b> chưa.
+     *
+     * <p><b>Vì sao hỏi payment chứ không hỏi {@code orders.paidAt}:</b> {@code paidAt} trên đơn là
+     * trường <i>cache</i>. Nó có thể {@code null} dù payment đã {@code PAID} — nếu IPN ghi payment
+     * rồi ứng dụng dừng trước khi kịp cập nhật đơn. Huỷ đơn dựa vào một trường phụ có thể lệch là
+     * quyết định dựa vào dữ liệu phụ; câu hỏi thật là "có đồng tiền nào đã vào cho đơn này chưa",
+     * và chỉ bảng {@code payments} trả lời được.</p>
+     *
+     * <p>Dùng cho tác vụ quét hết hạn: đơn quá hạn mà đã có payment {@code PAID} thì <b>không</b>
+     * được huỷ.</p>
+     */
+    boolean hasPaidPayment(UUID orderId);
+
+    /**
+     * Hỏi VNPay kết quả thật của lần thử thanh toán <b>mới nhất</b> của một đơn.
+     *
+     * <p><b>Vì sao hàm này nằm ở feature payment chứ không để feature order tự gọi
+     * {@code VnpayQueryService}:</b> để hỏi được thì cần biết {@code txnRef}, số tiền và thời điểm
+     * tạo của bản ghi thanh toán — toàn bộ đều là nội bộ của payment. Trả {@code PaymentEntity} ra
+     * ngoài feature rồi để order tự gọi tiếp là mở đường cho feature order đọc trường của payment,
+     * đúng thứ quy ước "không đi tắt qua repository của feature khác" sinh ra để chặn. Ở đây feature
+     * order chỉ nói "hỏi hộ tôi về đơn này" và nhận về một kết luận.</p>
+     *
+     * <p>Đơn không có bản ghi thanh toán nào (đơn tạo trước CK-2) ⇒ {@code UNKNOWN}: không có gì để
+     * hỏi thì không được kết luận gì.</p>
+     */
+    VnpayQueryResult queryVnpayForOrder(OrderEntity order);
 }

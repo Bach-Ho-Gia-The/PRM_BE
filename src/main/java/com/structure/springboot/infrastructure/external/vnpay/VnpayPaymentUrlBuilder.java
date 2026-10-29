@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
@@ -80,27 +81,16 @@ public class VnpayPaymentUrlBuilder {
     }
 
     private String toGatewayAmount(BigDecimal amount) {
-        if (amount == null || amount.signum() <= 0) {
-            throw new IllegalArgumentException(
-                    "Payment amount must be positive");
-        }
+        // Phép nhân 100 nằm ở VnpayAmounts, dùng chung với luồng đối chiếu (IPN, querydr).
+        // Hai nơi tự nhân lấy là lỗi lệch hệ số không test nào bắt được, vì triệu chứng của nó
+        // giống hệt "khách chuyển sai số tiền".
+        BigInteger gatewayAmount = VnpayAmounts.requireGatewayAmount(amount);
 
-        String value;
-        try {
-            value = amount.movePointRight(2)
-                    .toBigIntegerExact()
-                    .toString();
-        } catch (ArithmeticException exception) {
-            throw new IllegalArgumentException(
-                    "Payment amount must have at most two decimal places",
-                    exception);
-        }
-
-        if (value.length() > 12) {
+        if (!VnpayAmounts.fitsField(gatewayAmount)) {
             throw new IllegalArgumentException(
                     "Payment amount exceeds VNPay field length");
         }
 
-        return value;
+        return gatewayAmount.toString();
     }
 }
