@@ -95,7 +95,6 @@ spring:
   # Không cấu hình spring.security.oauth2.client: dự án đi đường "frontend lấy ID token rồi
   # gửi về backend" (POST /auth/google), backend không tham gia luồng redirect nên không cần
   # client-secret lẫn registration. Client ID nằm ở app.auth.google.client-id bên dưới.
-
 # ==========================================
 # CẤU HÌNH HỆ THỐNG DÙNG CHUNG (CORE APP)
 # ==========================================
@@ -130,7 +129,13 @@ app:
       max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
       lock-duration: ${LOGIN_LOCK_DURATION:15m}
     # Category/Product public có tiền tố /id và /slug; /categories/admin và /products/admin không được mở.
-    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**,/stores,/stores/id/**"
+    # /vnpay/** là endpoint VNPay gọi vào: IPN (server-to-server) và Return (trình duyệt khách).
+    # Hai endpoint này KHÔNG thể yêu cầu đăng nhập — VNPay không có token của mình, và khách thì
+    # đang ở trong trình duyệt chứ không phải app.
+    # ⚠ Cố ý KHÔNG đặt dưới /payments: whitelist khớp theo ĐƯỜNG DẪN, KHÔNG phân biệt HTTP method,
+    #   nên mở một nhánh trong /payments là mở luôn mọi thứ khác nằm trong nhánh đó.
+    # Tự vệ bằng chữ ký HMAC-SHA512 bên trong service, không bằng tầng bảo mật.
+    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**,/stores,/stores/id/**,/payments/vnpay/**"
   # ==========================================
   # QUY TẮC ĐẶT HÀNG
   # ==========================================
@@ -178,7 +183,7 @@ app:
       hash-secret: ${VNPAY_HASH_SECRET}
       payment-url: ${VNPAY_PAYMENT_URL}
       api-url: ${VNPAY_API_URL}
-      return-url: ${VNPAY_RETURN_URL}
+      return-url: ${VNPAY_RETURN_URL:http://localhost:${SERVER_PORT}${CONTEXT_PATH}/payments/vnpay/return}
 
       version: "2.1.0"
       command: pay

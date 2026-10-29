@@ -9,9 +9,13 @@ import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
+import com.structure.springboot.features.payment.entity.OrderRefundEntity;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
 import com.structure.springboot.features.payment.enums.PaymentStatus;
+import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.enums.RefundStatus;
 import com.structure.springboot.features.payment.mapper.PaymentMapper;
+import com.structure.springboot.features.payment.repository.OrderRefundRepository;
 import com.structure.springboot.features.payment.repository.PaymentRepository;
 import com.structure.springboot.features.payment.service.impl.PaymentServiceImpl;
 import com.structure.springboot.infrastructure.external.vnpay.VnpayPaymentUrlBuilder;
@@ -48,6 +52,7 @@ import static org.mockito.Mockito.when;
 class PaymentServiceImplTest {
 
     @Mock private PaymentRepository payments;
+    @Mock private OrderRefundRepository refunds;
     @Mock private OrderRepository orders;
     @Mock private VnpayPaymentUrlBuilder urlBuilder;
 
@@ -59,7 +64,7 @@ class PaymentServiceImplTest {
     @BeforeEach
     void setUp() {
         PaymentMapper mapper = Mappers.getMapper(PaymentMapper.class);
-        service = new PaymentServiceImpl(payments, orders, mapper, urlBuilder);
+        service = new PaymentServiceImpl(payments, refunds, orders, mapper, urlBuilder);
     }
 
     private OrderEntity order(PaymentMethod method, OrderStatus status, Instant dueAt) {
@@ -377,6 +382,151 @@ class PaymentServiceImplTest {
                 .thenReturn(Optional.of(paid));
 
         assertEquals(paidAt, service.findPaidAtForOrder(order.getId()));
+    }
+
+    // ───────────── yeu cau hoan tien (CK-4a) ─────────────
+
+    /** Don da tra tien bi huy: phai co dung MOT khoan hoan, ly do ORDER_CANCELLED. */
+    @Test
+    void cancellingAPaidOrderRecordsARefund() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        paid.setAmount(new BigDecimal("1030000"));
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+        when(refunds.existsByOrderId(order.getId())).thenReturn(false);
+        when(refunds.save(any(OrderRefundEntity.class))).thenAnswer(call -> call.getArgument(0));
+
+        service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+
+        ArgumentCaptor<OrderRefundEntity> captor = ArgumentCaptor.forClass(OrderRefundEntity.class);
+        verify(refunds).save(captor.capture());
+        OrderRefundEntity saved = captor.getValue();
+
+        assertEquals(RefundReason.ORDER_CANCELLED, saved.getReason());
+        assertEquals(RefundStatus.PENDING, saved.getStatus());
+        assertEquals(paid, saved.getPayment());
+        assertEquals(order, saved.getOrder());
+    }
+
+    /**
+     * so tien hoan lay tu payments.amount, KHONG phai orders.total.
+     *
+     * Don trong fixture co total = 1.030.000. Cho payments.amount khac di (990.000) de neu code
+     * lay nham tu don thi test do ngay — neu ca hai bang nhau thi test nay vo dung.
+     */
+    @Test
+    void theRefundAmountComesFromThePaymentNotTheOrder() {
+        OrderEntity order = payableOrder();               // order.getTotal() = 1.030.000
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        paid.setAmount(new BigDecimal("990000"));         // so tien THUC SU thu duoc
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+        when(refunds.existsByOrderId(order.getId())).thenReturn(false);
+        when(refunds.save(any(OrderRefundEntity.class))).thenAnswer(call -> call.getArgument(0));
+
+        service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+
+        ArgumentCaptor<OrderRefundEntity> captor = ArgumentCaptor.forClass(OrderRefundEntity.class);
+        verify(refunds).save(captor.capture());
+        assertEquals(new BigDecimal("990000"), captor.getValue().getAmount());
+    }
+
+    /** Huy don CHUA thanh toan: khong co khoan hoan nao. Day la ca thuong gap nhat. */
+    @Test
+    void cancellingAnUnpaidOrderRecordsNoRefund() {
+        OrderEntity order = payableOrder();
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(attempt(PaymentStatus.PENDING, 1, order)));
+
+        service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+
+        verify(refunds, never()).save(any());
+    }
+
+    /** Don khong co ban ghi payment nao (du lieu cu): khong nem, khong ghi. */
+    @Test
+    void anOrderWithoutAnyPaymentRecordsNoRefund() {
+        OrderEntity order = payableOrder();
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.empty());
+
+        service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+
+        verify(refunds, never()).save(any());
+    }
+
+    /**
+     * Goi lai lan hai phai IM LANG bo qua, khong nem.
+     *
+     * Bon duong cung co the goi ham nay cho mot don: khach huy, shop huy, IPN ve muon, IPN gui
+     * lap. Nguoi goi khong lam gi sai — chi la su kien den lan thu hai.
+     */
+    @Test
+    void aSecondRefundRequestIsSilentlyIgnored() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+        when(refunds.existsByOrderId(order.getId())).thenReturn(true);   // da co roi
+
+        service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+
+        verify(refunds, never()).save(any());
+    }
+
+    /** Ly do phai duoc ghi dung — day la thu phan biet "khach huy" voi "IPN ve muon". */
+    @Test
+    void theReasonDistinguishesPaidAfterCancelFromOrderCancelled() {
+        OrderEntity order = payableOrder();
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+        when(refunds.existsByOrderId(order.getId())).thenReturn(false);
+        when(refunds.save(any(OrderRefundEntity.class))).thenAnswer(call -> call.getArgument(0));
+
+        service.requestRefundIfPaid(order, RefundReason.PAID_AFTER_CANCEL);
+
+        ArgumentCaptor<OrderRefundEntity> captor = ArgumentCaptor.forClass(OrderRefundEntity.class);
+        verify(refunds).save(captor.capture());
+        assertEquals(RefundReason.PAID_AFTER_CANCEL, captor.getValue().getReason());
+    }
+
+    /** payment FAILED / EXPIRED / CANCELLED: khong co tien vao thi khong hoan. */
+    @Test
+    void aClosedButUnpaidPaymentNeverProducesARefund() {
+        for (PaymentStatus status : new PaymentStatus[]{
+                PaymentStatus.FAILED, PaymentStatus.EXPIRED, PaymentStatus.CANCELLED}) {
+            OrderEntity order = payableOrder();
+            when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                    .thenReturn(Optional.of(attempt(status, 1, order)));
+
+            service.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
+        }
+        verify(refunds, never()).save(any());
+    }
+
+    /**
+     * findOrderForConfirmation phai di qua finder CO KHOA.
+     *
+     * Test nay ton tai de chan mot "toi uu" rat de xay ra: doi findForUpdateWithItemsById thanh
+     * findById cho gon. Mat khoa la mo lai khe tranh chap giua IPN va tac vu quet het han.
+     */
+    @Test
+    void findOrderForConfirmationUsesTheLockingFinder() {
+        UUID orderId = UUID.randomUUID();
+        OrderEntity order = payableOrder();
+        when(orders.findForUpdateWithItemsById(orderId)).thenReturn(Optional.of(order));
+
+        assertEquals(Optional.of(order), service.findOrderForConfirmation(orderId));
+        verify(orders).findForUpdateWithItemsById(orderId);
+        verify(orders, never()).findById(any());
+    }
+
+    @Test
+    void findOrderForConfirmationReturnsEmptyForANullIdAndNeverHitsTheDatabase() {
+        assertTrue(service.findOrderForConfirmation(null).isEmpty());
+        verify(orders, never()).findForUpdateWithItemsById(any());
     }
 
     @Test

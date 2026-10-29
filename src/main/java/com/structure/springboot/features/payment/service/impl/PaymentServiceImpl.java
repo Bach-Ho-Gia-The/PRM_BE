@@ -9,9 +9,13 @@ import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.payment.dto.request.VnpayPaymentRequest;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
+import com.structure.springboot.features.payment.entity.OrderRefundEntity;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
 import com.structure.springboot.features.payment.enums.PaymentStatus;
+import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.enums.RefundStatus;
 import com.structure.springboot.features.payment.mapper.PaymentMapper;
+import com.structure.springboot.features.payment.repository.OrderRefundRepository;
 import com.structure.springboot.features.payment.repository.PaymentRepository;
 import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.infrastructure.external.vnpay.VnpayPaymentUrlBuilder;
@@ -29,6 +33,7 @@ import java.util.UUID;
 public class PaymentServiceImpl implements PaymentService {
 
     private final PaymentRepository paymentRepository;
+    private final OrderRefundRepository orderRefundRepository;
     private final OrderRepository orderRepository;
     private final PaymentMapper paymentMapper;
     private final VnpayPaymentUrlBuilder vnpayPaymentUrlBuilder;
@@ -117,6 +122,56 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(orderId)
                 .map(PaymentEntity::getPaidAt)
                 .orElse(null);
+    }
+
+    @Override
+    @Transactional
+    public Optional<OrderEntity> findOrderForConfirmation(UUID orderId) {
+        if (orderId == null) {
+            return Optional.empty();
+        }
+        // Finder CÓ khoá, không phải findById — xem javadoc ở interface. Đừng "toi ưu" thành
+        // findById: mất khoá là mở lại đúng khe tranh chấp mà hàm này sinh ra để bịt.
+        return orderRepository.findForUpdateWithItemsById(orderId);
+    }
+
+    @Override
+    @Transactional
+    public void requestRefundIfPaid(OrderEntity order, RefundReason reason) {
+        if (order == null || order.getId() == null) {
+            return;
+        }
+
+        // Tìm ĐÚNG lần thử đã thu được tiền, không phải lần mới nhất: một đơn có thể có nhiều lần
+        // thử và con trỏ hoàn tiền phải trỏ vào bản ghi thật sự có tiền vào.
+        Optional<PaymentEntity> paidPayment = paymentRepository
+                .findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .filter(payment -> payment.getStatus() == PaymentStatus.PAID);
+
+        if (paidPayment.isEmpty()) {
+            // Ca thường gặp nhất: huỷ đơn chưa thanh toán. Không có tiền vào thì không có gì để
+            // hoàn, và đây KHÔNG phải lỗi.
+            return;
+        }
+
+        // Kiểm trước rồi mới ghi: ràng buộc unique trên order_id là lớp chặn cuối, nhưng để nó
+        // ném ra thì phải bắt exception và đoán xem có phải trùng hay không. Kiểm trước thì
+        // trường hợp "sự kiện đến lần thứ hai" được xử lý bằng một câu if đọc là hiểu.
+        if (orderRefundRepository.existsByOrderId(order.getId())) {
+            return;
+        }
+
+        PaymentEntity payment = paidPayment.get();
+
+        // amount lấy từ payments.amount chứ KHÔNG phải orders.total: đây là số tiền thực sự đã
+        // thu. Xem javadoc OrderRefundEntity để biết vì sao hai con số này có thể lệch.
+        orderRefundRepository.save(OrderRefundEntity.builder()
+                .order(order)
+                .payment(payment)
+                .amount(payment.getAmount())
+                .status(RefundStatus.PENDING)
+                .reason(reason)
+                .build());
     }
 
     /**

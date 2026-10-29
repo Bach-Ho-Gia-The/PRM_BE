@@ -22,6 +22,7 @@ import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.order.service.OrderService;
 import com.structure.springboot.features.order.specification.OrderSpecifications;
+import com.structure.springboot.features.payment.enums.RefundReason;
 import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -338,6 +339,9 @@ public class OrderServiceImpl implements OrderService {
         order.setCancelReason(cancelReason);
         // Cùng giao dịch: đơn huỷ mà payment không đóng được thì cả hai cùng rollback.
         paymentService.releaseForOrderCancel(order);
+        // Đơn đã trả tiền thì phải có khoản hoàn — luật 7: huỷ đơn khác với đã hoàn tiền.
+        // Hàm tự bỏ qua khi đơn chưa từng được trả tiền, nên không cần rẽ nhánh ở đây.
+        paymentService.requestRefundIfPaid(order, RefundReason.ORDER_CANCELLED);
 
         OrderResponse response = toResponse(orderRepository.saveAndFlush(order));
 

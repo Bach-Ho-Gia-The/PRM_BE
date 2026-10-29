@@ -4,8 +4,10 @@ import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
+import com.structure.springboot.features.payment.enums.RefundReason;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface PaymentService {
@@ -78,4 +80,51 @@ public interface PaymentService {
      * feature không được chạm repository của feature khác.</p>
      */
     Instant findPaidAtForOrder(UUID orderId);
+
+    /**
+     * Ghi nhận một khoản <b>cần hoàn</b> cho đơn, <b>chỉ khi</b> đơn đã thực sự được trả tiền.
+     *
+     * <p>Hàm <b>idempotent theo đơn</b>: gọi nhiều lần cho cùng một đơn thì vẫn chỉ có đúng một
+     * khoản hoàn. Lý do không phải cho đẹp — có tới bốn đường cùng có thể gọi hàm này cho một đơn:
+     * khách huỷ đơn đã trả tiền, shop huỷ, IPN báo đã trả tiền sau khi đơn đã chết, và IPN gửi
+     * lặp lại. Đường thứ hai và thứ tư <b>sẽ</b> xảy ra trong thực tế, không phải giả định.</p>
+     *
+     * <h2>Hàm này KHÔNG làm gì trong hai trường hợp</h2>
+     * <ul>
+     *   <li><b>Đơn chưa từng được trả tiền</b> — huỷ đơn chưa thanh toán thì không có gì để hoàn.
+     *       Đây là ca thường gặp nhất, nên nó là nhánh <b>phải</b> rõ ràng chứ không phải ngoại lệ
+     *       hiếm.</li>
+     *   <li><b>Đơn đã có khoản hoàn rồi</b> — gọi lại thì im lặng bỏ qua, <b>không</b> ném
+     *       {@code ApiException}: người gọi không làm gì sai, chỉ là sự kiện đến lần thứ hai.</li>
+     * </ul>
+     *
+     * <p><b>Không hoàn tiền tự động.</b> Hàm chỉ ghi nhận nghĩa vụ, trạng thái là {@code PENDING}.
+     * Việc chuyển tiền thật cho khách do shop làm qua cổng thanh toán và đánh dấu ở đợt sau —
+     * "cần hoàn" và "đã hoàn" là hai chuyện khác nhau, đánh đồng là nói dối khách.</p>
+     *
+     * @param order  đơn vừa bị huỷ hoặc vừa nhận được tiền muộn
+     * @param reason lý do, phân biệt "khách huỷ đơn đã trả tiền" với "IPN về muộn"
+     */
+    void requestRefundIfPaid(OrderEntity order, RefundReason reason);
+
+    /**
+     * Đọc đơn của một payment <b>kèm khoá ghi trên dòng đơn</b>, dùng riêng cho việc xác nhận
+     * thanh toán từ cổng.
+     *
+     * <p><b>Vì sao phải khoá:</b> tác vụ quét hết hạn (CK-5) và IPN có thể chạy cùng lúc. Nếu IPN
+     * không khoá đơn thì kịch bản sau xảy ra được: IPN đọc thấy đơn {@code PENDING}, tác vụ quét
+     * huỷ đơn và hoàn kho, IPN ghi tiếp và đặt payment {@code PAID} — khách mất tiền, đơn bị huỷ,
+     * hàng đã về kho, và khoản hoàn thì không ai tạo vì lúc IPN đọc thì đơn còn sống. Khoá dòng đơn
+     * làm hai bên xếp hàng: ai vào sau đọc được trạng thái đã đổi.</p>
+     *
+     * <p><b>Vì sao hàm này nằm ở đây chứ không để tầng payment tự inject {@code OrderRepository}:</b>
+     * quy ước của dự án là không đi tắt qua repository của feature khác. Ranh giới feature đi qua
+     * service. {@code PaymentService} đã có sẵn {@code OrderRepository} từ CK-2 (dùng để khoá đơn
+     * trong {@code startVnpayPayment}) nên đặt ở đây không sinh phụ thuộc mới, và cũng không tạo
+     * vòng bean vì {@code OrderService} → {@code PaymentService} đã là chiều phụ thuộc có sẵn.</p>
+     *
+     * @param orderId  mã đơn lấy từ payment; {@code null} thì trả rỗng
+     * @return đơn đã khoá, hoặc rỗng nếu không tồn tại
+     */
+    Optional<OrderEntity> findOrderForConfirmation(UUID orderId);
 }
