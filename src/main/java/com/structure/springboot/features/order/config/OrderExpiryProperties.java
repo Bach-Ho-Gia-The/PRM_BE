@@ -1,5 +1,7 @@
 package com.structure.springboot.features.order.config;
 
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
 import java.time.Duration;
 
 /**
@@ -25,6 +27,7 @@ import java.time.Duration;
  * @param maxQueryAttempts số lần tối đa hỏi VNPay cho một đơn không có kết luận rõ ràng
  * @param maxAgeHours      chỉ xét đơn có hạn thanh toán trong vòng bao nhiêu giờ gần đây
  */
+@ConfigurationProperties(prefix = "app.order.expiry")
 public record OrderExpiryProperties(
         Duration scanInterval,
         Duration scanInitialDelay,

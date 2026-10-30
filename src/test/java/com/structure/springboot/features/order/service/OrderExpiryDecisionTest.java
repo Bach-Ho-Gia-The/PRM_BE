@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -31,6 +32,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -107,6 +109,34 @@ class OrderExpiryDecisionTest {
 
     private OrderExpirySummary scan() {
         return service.expireOverdueOrders(NOW);
+    }
+
+    // ------------------------------------------------------------------ retry deadlock
+
+    @Nested
+    @DisplayName("Thua deadlock ở chặng chốt thì thử lại, không bỏ sót đơn")
+    class RetryOnDeadlock {
+
+        /**
+         * settleExpiredOrder thua deadlock một lần rồi qua: lượt quét phải THỬ LẠI và vẫn huỷ được
+         * đơn, thay vì để lỗi tạm thời làm hỏng việc huỷ. Đây là nợ CK-1 ("retry deadlock").
+         */
+        @Test
+        @DisplayName("deadlock một lần ⇒ thử lại và huỷ thành công")
+        void aDeadlockOnSettleIsRetried() {
+            verdict(VnpayQueryVerdict.FAILED);
+            when(selfProxy.settleExpiredOrder(eq(orderId), eq(VnpayQueryVerdict.FAILED), any()))
+                    .thenThrow(new DeadlockLoserDataAccessException("deadlock", new RuntimeException("db")))
+                    .thenReturn(true);
+
+            OrderExpirySummary summary = scan();
+
+            // Gọi đúng hai lần: lần đầu thua deadlock, lần hai thành công.
+            verify(selfProxy, times(2))
+                    .settleExpiredOrder(eq(orderId), eq(VnpayQueryVerdict.FAILED), any());
+            assertThat(summary.cancelled()).isEqualTo(1);
+            assertThat(summary.isConsistent()).isTrue();
+        }
     }
 
     // ------------------------------------------------------------------ bốn kết cục

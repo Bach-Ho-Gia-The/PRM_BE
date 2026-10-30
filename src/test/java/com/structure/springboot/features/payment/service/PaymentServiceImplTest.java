@@ -7,7 +7,10 @@ import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.common.response.PageResponse;
+import com.structure.springboot.features.payment.dto.projection.RefundAdminView;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.RefundAdminResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.OrderRefundEntity;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
@@ -26,10 +29,14 @@ import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -544,5 +551,223 @@ class PaymentServiceImplTest {
         when(payments.findFirstByOrderIdOrderByAttemptNoDesc(noPaymentOrder.getId()))
                 .thenReturn(Optional.empty());
         assertNull(service.findPaidAtForOrder(noPaymentOrder.getId()));
+    }
+
+    // ───────────── CK-7b: shop xac nhan thu tien mat (COD) ─────────────
+
+    /** COD order dang SHIPPING, voi mot lan thu PENDING. */
+    private OrderEntity codOrder(OrderStatus status) {
+        return order(PaymentMethod.COD, status, null);
+    }
+
+    private void stubCodOrder(OrderEntity order) {
+        when(orders.findForUpdateByOrderNumber(ORDER_NO)).thenReturn(Optional.of(order));
+    }
+
+    /**
+     * Ca chinh: don COD dang SHIPPING, payment PENDING -> PAID, paidAt = bay gio,
+     * va TRANG THAI DON KHONG DOI.
+     */
+    @Test
+    void confirmingCodMarksThePaymentPaidWithoutTouchingTheOrderStatus() {
+        OrderEntity order = codOrder(OrderStatus.SHIPPING);
+        PaymentEntity pending = attempt(PaymentStatus.PENDING, 1, order);
+        pending.setPaidAt(null);
+        stubCodOrder(order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(pending));
+
+        Instant before = Instant.now();
+        PaymentResponse response = service.confirmCodPayment(ORDER_NO);
+
+        assertEquals(PaymentStatus.PAID, pending.getStatus());
+        assertNotNull(pending.getPaidAt());
+        assertTrue(!pending.getPaidAt().isBefore(before));
+        assertEquals(PaymentStatus.PAID, response.status());
+        // Thu tien mat KHONG xac nhan/hoan tat don.
+        assertEquals(OrderStatus.SHIPPING, order.getStatus());
+    }
+
+    /** Don COD da COMPLETED van thu duoc tien (giao xong moi thu). */
+    @Test
+    void confirmingCodWorksOnACompletedOrder() {
+        OrderEntity order = codOrder(OrderStatus.COMPLETED);
+        PaymentEntity pending = attempt(PaymentStatus.PENDING, 1, order);
+        stubCodOrder(order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(pending));
+
+        service.confirmCodPayment(ORDER_NO);
+
+        assertEquals(PaymentStatus.PAID, pending.getStatus());
+    }
+
+    /**
+     * Idempotent: goi lai tren payment da PAID tra ket qua hien tai va KHONG ghi de paidAt.
+     * Day la diem de hong nhat — bam hai lan khong duoc doi moc da thu.
+     */
+    @Test
+    void confirmingAnAlreadyPaidCodIsIdempotentAndKeepsTheOriginalPaidAt() {
+        OrderEntity order = codOrder(OrderStatus.COMPLETED);
+        PaymentEntity paid = attempt(PaymentStatus.PAID, 1, order);
+        Instant originalPaidAt = Instant.now().minus(3, ChronoUnit.HOURS);
+        paid.setPaidAt(originalPaidAt);
+        stubCodOrder(order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.of(paid));
+
+        PaymentResponse response = service.confirmCodPayment(ORDER_NO);
+
+        assertEquals(PaymentStatus.PAID, response.status());
+        // Moc cu phai nguyen ven.
+        assertEquals(originalPaidAt, paid.getPaidAt());
+    }
+
+    /** Don chuyen khoan KHONG di qua cua nay: phai dung luong VNPay. */
+    @Test
+    void confirmingCodRejectsABankTransferOrder() {
+        OrderEntity order = order(PaymentMethod.BANK_TRANSFER, OrderStatus.SHIPPING, null);
+        stubCodOrder(order);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.confirmCodPayment(ORDER_NO));
+
+        assertEquals(ErrorCode.CONFLICT, exception.getErrorCode());
+    }
+
+    /** Don da huy: tu choi voi thong diep rieng ve "cancelled". */
+    @Test
+    void confirmingCodRejectsACancelledOrder() {
+        OrderEntity order = codOrder(OrderStatus.CANCELLED);
+        stubCodOrder(order);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.confirmCodPayment(ORDER_NO));
+
+        assertEquals(ErrorCode.CONFLICT, exception.getErrorCode());
+        assertTrue(exception.getMessage().contains("cancelled"));
+    }
+
+    /** Don chua giao (PENDING / CONFIRMED): chua co gi de thu. */
+    @Test
+    void confirmingCodRejectsAnOrderThatHasNotShippedYet() {
+        for (OrderStatus status : new OrderStatus[]{OrderStatus.PENDING, OrderStatus.CONFIRMED}) {
+            OrderEntity order = codOrder(status);
+            when(orders.findForUpdateByOrderNumber(ORDER_NO)).thenReturn(Optional.of(order));
+
+            ApiException exception = assertThrows(ApiException.class,
+                    () -> service.confirmCodPayment(ORDER_NO));
+
+            assertEquals(ErrorCode.CONFLICT, exception.getErrorCode());
+        }
+    }
+
+    /** Don khong ton tai: 404. */
+    @Test
+    void confirmingCodForAMissingOrderIsNotFound() {
+        when(orders.findForUpdateByOrderNumber(ORDER_NO)).thenReturn(Optional.empty());
+
+        assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
+                () -> service.confirmCodPayment(ORDER_NO)).getErrorCode());
+    }
+
+    /** Don khong co ban ghi payment (du lieu tao truoc CK-2): 404, khong NPE. */
+    @Test
+    void confirmingCodForAnOrderWithoutPaymentIsNotFound() {
+        OrderEntity order = codOrder(OrderStatus.SHIPPING);
+        stubCodOrder(order);
+        when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                .thenReturn(Optional.empty());
+
+        assertEquals(ErrorCode.NOT_FOUND, assertThrows(ApiException.class,
+                () -> service.confirmCodPayment(ORDER_NO)).getErrorCode());
+    }
+
+    /** Payment da dong nhung CHUA thu tien (CANCELLED/EXPIRED/FAILED): khong duoc am tham ghi PAID. */
+    @Test
+    void confirmingCodRejectsAClosedButUnpaidPayment() {
+        for (PaymentStatus status : new PaymentStatus[]{
+                PaymentStatus.CANCELLED, PaymentStatus.EXPIRED, PaymentStatus.FAILED}) {
+            OrderEntity order = codOrder(OrderStatus.SHIPPING);
+            when(orders.findForUpdateByOrderNumber(ORDER_NO)).thenReturn(Optional.of(order));
+            when(payments.findFirstByOrderIdOrderByAttemptNoDesc(order.getId()))
+                    .thenReturn(Optional.of(attempt(status, 1, order)));
+
+            ApiException exception = assertThrows(ApiException.class,
+                    () -> service.confirmCodPayment(ORDER_NO));
+
+            assertEquals(ErrorCode.CONFLICT, exception.getErrorCode());
+        }
+    }
+
+    // ───────────── CK-7a: danh sach hoan tien cho shop ─────────────
+
+    /** Dung projection lam du lieu test — khong can entity that. */
+    private RefundAdminView refundView(String orderNo, String customerName,
+                                       BigDecimal amount, RefundReason reason, RefundStatus status) {
+        RefundAdminView.OrderRef orderRef = new RefundAdminView.OrderRef() {
+            public String getOrderNumber() { return orderNo; }
+            public String getReceiverName() { return customerName; }
+        };
+        return new RefundAdminView() {
+            public UUID getId() { return UUID.randomUUID(); }
+            public BigDecimal getAmount() { return amount; }
+            public RefundReason getReason() { return reason; }
+            public RefundStatus getStatus() { return status; }
+            public Instant getCreatedAt() { return Instant.now(); }
+            public OrderRef getOrder() { return orderRef; }
+        };
+    }
+
+    /** Khong loc trang thai: lay TAT CA (findByCreatedAtNotNull), khong goi findByStatus. */
+    @Test
+    void listingRefundsWithoutAStatusReturnsAll() {
+        Pageable pageable = PageRequest.of(0, 20);
+        RefundAdminView view = refundView(ORDER_NO, "Nguyen Van A",
+                new BigDecimal("1030000"), RefundReason.ORDER_CANCELLED, RefundStatus.PENDING);
+        when(refunds.findByCreatedAtNotNull(pageable))
+                .thenReturn(new PageImpl<>(List.of(view), pageable, 1));
+
+        PageResponse<RefundAdminResponse> page = service.getRefunds(null, pageable);
+
+        assertEquals(1, page.content().size());
+        verify(refunds).findByCreatedAtNotNull(pageable);
+        verify(refunds, never()).findByStatus(any(), any());
+    }
+
+    /** Co loc: goi findByStatus voi dung trang thai, khong goi nhanh lay tat ca. */
+    @Test
+    void listingRefundsFiltersByStatusWhenProvided() {
+        Pageable pageable = PageRequest.of(0, 20);
+        when(refunds.findByStatus(RefundStatus.REFUNDED, pageable))
+                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
+
+        service.getRefunds(RefundStatus.REFUNDED, pageable);
+
+        verify(refunds).findByStatus(RefundStatus.REFUNDED, pageable);
+        verify(refunds, never()).findByCreatedAtNotNull(any());
+    }
+
+    /**
+     * Trai phang dung: orderNumber va customerName khong duoc hoan doi cho nhau.
+     *
+     * Cho hai gia tri khac han nhau de neu code gan nham (lay receiverName cho orderNumber) thi
+     * test do ngay.
+     */
+    @Test
+    void theRefundRowFlattensOrderNumberAndCustomerNameWithoutSwapping() {
+        Pageable pageable = PageRequest.of(0, 20);
+        RefundAdminView view = refundView("LBVN-ORDER-9", "Tran Thi B",
+                new BigDecimal("500000"), RefundReason.PAID_AFTER_CANCEL, RefundStatus.PENDING);
+        when(refunds.findByCreatedAtNotNull(pageable))
+                .thenReturn(new PageImpl<>(List.of(view), pageable, 1));
+
+        RefundAdminResponse row = service.getRefunds(null, pageable).content().get(0);
+
+        assertEquals("LBVN-ORDER-9", row.orderNumber());
+        assertEquals("Tran Thi B", row.customerName());
+        assertEquals(new BigDecimal("500000"), row.amount());
+        assertEquals(RefundReason.PAID_AFTER_CANCEL, row.reason());
+        assertEquals(RefundStatus.PENDING, row.status());
     }
 }

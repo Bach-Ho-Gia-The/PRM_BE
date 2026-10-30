@@ -24,6 +24,7 @@ import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
 import com.structure.springboot.features.order.service.OrderExpiryCooldown;
 import com.structure.springboot.features.order.service.OrderService;
+import com.structure.springboot.features.order.service.TransactionRetry;
 import com.structure.springboot.features.order.specification.OrderSpecifications;
 import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
 import com.structure.springboot.features.payment.enums.RefundReason;
@@ -406,7 +407,13 @@ public class OrderServiceImpl implements OrderService {
             }
 
             // Chặng 3: chốt trong một giao dịch ngắn, có khoá, và KIỂM LẠI (xem settleExpiredOrder).
-            if (self.getObject().settleExpiredOrder(candidate.getId(), verdict, now)) {
+            // Bọc retry: chặng này khoá dòng đơn + nhiều dòng biến thể, nên có thể thua deadlock.
+            // TransactionRetry gọi settleExpiredOrder QUA proxy nên mỗi lần thử là một giao dịch mới
+            // — bắt buộc, vì không thể thử lại trong một giao dịch đã bị database huỷ.
+            boolean settled = TransactionRetry.execute(
+                    "settle expired order " + candidate.getOrderNumber(),
+                    () -> self.getObject().settleExpiredOrder(candidate.getId(), verdict, now));
+            if (settled) {
                 cooldown.forget(candidate.getId());
                 cancelled++;
             } else {

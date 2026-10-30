@@ -25,6 +25,16 @@ class VnpayIpnAcknowledgementTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
+     * Tien to duong dan khai o muc lop. Controller nay dat goc o {@code @RequestMapping} muc lop
+     * ({@code /payments/vnpay}), nen duong that cua moi endpoint = tien to nay + path tren method.
+     */
+    private static String classPath() {
+        return VnpayCallbackController.class
+                .getAnnotation(org.springframework.web.bind.annotation.RequestMapping.class)
+                .value()[0];
+    }
+
+    /**
      * TEN KHOA PHAI VIET HOA — day la test quan trong nhat cua file.
      *
      * Jackson mac dinh doi {@code rspCode} thanh {@code "rspCode"}. Chi {@code @JsonProperty} moi
@@ -79,8 +89,8 @@ class VnpayIpnAcknowledgementTest {
                 .getMethod("ipn", jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);
 
-        assertEquals("/vnpay/ipn", annotation.value()[0],
-                "duong dan phai khai day du tren method, khong dua vao @RequestMapping o lop");
+        assertEquals("/payments/vnpay/ipn", classPath() + annotation.value()[0],
+                "duong that cua IPN phai la /payments/vnpay/ipn");
         assertEquals(MediaType.APPLICATION_JSON_VALUE, annotation.produces()[0]);
     }
 
@@ -91,23 +101,26 @@ class VnpayIpnAcknowledgementTest {
                 .getMethod("returnPage", jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);
 
-        assertEquals("/vnpay/return", annotation.value()[0]);
+        assertEquals("/payments/vnpay/return", classPath() + annotation.value()[0],
+                "duong that cua Return phai la /payments/vnpay/return");
         assertEquals(MediaType.TEXT_HTML_VALUE, annotation.produces()[0]);
     }
 
     /**
-     * Khong duoc co {@code @RequestMapping} o cap lop.
+     * Goc cua controller phai la {@code /payments/vnpay}.
      *
-     * <p>Neu co, duong dan trong /v3/api-docs bi tach thanh hai cap va Swagger hien thi sai — dung
-     * thu da lam nguoi test tay khong tim ra endpoint.</p>
+     * <p>Thiet ke chot: hai endpoint callback nam duoi {@code /payments/vnpay/**}, va whitelist
+     * ({@code app.security.whitelist}) cung yaml {@code vnpay.return-url} mac dinh deu phai tro vao
+     * dung tien to nay. Doi goc o day ma quen hai cho kia la VNPay goi vao duong khong duoc mo cong
+     * khai -> 401, hoac Return URL tro sai -> 404. Test khoa tien to lai de doi mot cho la do ngay.</p>
      */
     @Test
-    void theControllerDoesNotDeclareAClassLevelPath() {
-        assertTrue(
-                VnpayCallbackController.class
-                        .getAnnotation(org.springframework.web.bind.annotation.RequestMapping.class)
-                        == null,
-                "khong duoc dat @RequestMapping o cap lop");
+    void theControllerIsRootedUnderPaymentsVnpay() {
+        var classMapping = VnpayCallbackController.class
+                .getAnnotation(org.springframework.web.bind.annotation.RequestMapping.class);
+
+        assertTrue(classMapping != null, "phai co @RequestMapping o cap lop lam goc chung");
+        assertEquals("/payments/vnpay", classMapping.value()[0]);
     }
 
     /** ResponseEntity cua IPN phai la 200 va chua body — khong 4xx/5xx. */
@@ -122,10 +135,10 @@ class VnpayIpnAcknowledgementTest {
     /**
      * Controller nay chi duoc co DUNG HAI mapping, va ca hai deu la GET.
      *
-     * <p>Vi sao: moi endpoint trong class nay nam duoi {@code /vnpay/**}, tuc la <b>cong khai</b>.
-     * Them mot {@code @PostMapping} hay mot method thu ba la mo them mot duong khong can dang nhap —
-     * va khong co gi bao, vi no van bien dich va van chay. Test nay buoc nguoi them phai sua o day,
-     * tuc la phai doc lai ly do vi sao whitelist duoc mo.</p>
+     * <p>Vi sao: moi endpoint trong class nay nam duoi {@code /payments/vnpay/**}, tuc la
+     * <b>cong khai</b>. Them mot {@code @PostMapping} hay mot method thu ba la mo them mot duong
+     * khong can dang nhap — va khong co gi bao, vi no van bien dich va van chay. Test nay buoc nguoi
+     * them phai sua o day, tuc la phai doc lai ly do vi sao whitelist duoc mo.</p>
      */
     @Test
     void theControllerExposesExactlyTwoGetEndpoints() {
@@ -134,20 +147,20 @@ class VnpayIpnAcknowledgementTest {
         for (var method : VnpayCallbackController.class.getDeclaredMethods()) {
             var get = method.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);
             if (get != null) {
-                mappings.add("GET " + String.join(",", get.value()));
+                mappings.add("GET " + classPath() + String.join(",", get.value()));
             }
             for (var annotation : method.getAnnotations()) {
                 String name = annotation.annotationType().getSimpleName();
                 if (name.endsWith("Mapping") && !"GetMapping".equals(name)) {
                     throw new AssertionError("Chi duoc phep GET, nhung " + method.getName()
-                            + " co " + name + " — endpoint /vnpay/** la cong khai");
+                            + " co " + name + " — endpoint /payments/vnpay/** la cong khai");
                 }
             }
         }
 
         mappings.sort(String::compareTo);
         assertEquals(
-                java.util.List.of("GET /vnpay/ipn", "GET /vnpay/return"),
+                java.util.List.of("GET /payments/vnpay/ipn", "GET /payments/vnpay/return"),
                 mappings,
                 "Tap mapping cua controller da thay doi — doc lai javadoc lop truoc khi sua");
     }

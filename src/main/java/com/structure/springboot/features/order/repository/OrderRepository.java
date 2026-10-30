@@ -91,6 +91,24 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID>,
     @EntityGraph(attributePaths = {"items"})
     Optional<OrderEntity> findForUpdateByOrderNumberAndAccountId(String orderNumber, UUID accountId);
 
+    /**
+     * Bản khoá theo <b>mã đơn, không lọc chủ sở hữu</b> — dùng cho thao tác của SHOP trên đơn của
+     * khách, cụ thể là xác nhận đã thu tiền mặt đơn COD.
+     *
+     * <p>Không có {@code accountId} vì đây không phải tài nguyên của người đang đăng nhập: shop
+     * thao tác trên đơn của khách. Phân quyền do {@code @PreAuthorize("hasRole('ADMIN')")} ở
+     * controller lo, không phải lọc theo chủ sở hữu ở câu SQL.</p>
+     *
+     * <p><b>Vì sao vẫn khoá:</b> hai nhân viên cùng bấm "đã thu tiền", hoặc một bên xác nhận thu
+     * tiền trong khi bên kia đang huỷ đơn — khoá dòng đơn làm hai luồng xếp hàng, ai vào sau đọc
+     * được trạng thái đã đổi. Cùng cơ chế {@link #findForUpdateWithItemsById} dùng cho IPN.</p>
+     *
+     * <p><b>Không {@code @EntityGraph}:</b> xác nhận thu tiền COD không chạm dòng hàng (không hoàn
+     * kho, không đổi tồn), nên nạp kèm {@code items} là nạp thừa.</p>
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<OrderEntity> findForUpdateByOrderNumber(String orderNumber);
+
     /** Danh sách đơn của tôi. KHÔNG fetch items — màn hình danh sách không dùng tới. */
     /**
      * Đơn quá hạn thanh toán, dùng cho tác vụ quét hết hạn.

@@ -30,9 +30,17 @@ import java.util.List;
 @Entity
 @Table(
         name = "orders",
-        // Postgres KHÔNG tự tạo index cho cột khoá ngoại. Thiếu index này thì màn "đơn hàng của
-        // tôi" phải quét toàn bảng orders, càng nhiều khách đặt càng chậm.
-        indexes = @Index(name = "idx_orders_account_id", columnList = "account_id")
+        indexes = {
+                // Postgres KHÔNG tự tạo index cho cột khoá ngoại. Thiếu index này thì màn "đơn hàng
+                // của tôi" phải quét toàn bảng orders, càng nhiều khách đặt càng chậm.
+                @Index(name = "idx_orders_account_id", columnList = "account_id"),
+                // Tác vụ quét hết hạn (CK-5) chạy MỖI PHÚT, lọc status = PENDING và payment_due_at
+                // trong một khoảng. Không có index này thì mỗi lượt là một full-table-scan trên
+                // orders, vĩnh viễn. Composite (status, payment_due_at): cột lọc thô đứng trước, cột
+                // so khoảng đứng sau — đúng thứ tự câu truy vấn cần để nhảy thẳng tới khúc PENDING
+                // rồi lấy đúng đoạn quá hạn.
+                @Index(name = "idx_orders_status_due", columnList = "status, payment_due_at")
+        }
 )
 @Getter
 @Setter

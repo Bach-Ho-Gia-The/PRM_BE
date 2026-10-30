@@ -1,14 +1,22 @@
 package com.structure.springboot.features.payment.controller;
 
 import com.structure.springboot.common.response.ApiResponse;
+import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.common.security.AuthenticatedUser;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.RefundAdminResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
+import com.structure.springboot.features.payment.enums.RefundStatus;
 import com.structure.springboot.features.payment.service.PaymentService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
@@ -69,6 +77,63 @@ public class PaymentController {
                         .message("Payment retrieved successfully")
                         .result(paymentService.getMyPayment(
                                 AuthenticatedUser.requireId(currentUser), orderNumber))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /**
+     * Màn quản trị: danh sách khoản hoàn tiền, lọc theo trạng thái nếu truyền {@code ?status=}.
+     *
+     * <p><b>Chỉ {@code ADMIN}.</b> Đặt ở {@code /payments/admin/refunds}: tiền tố {@code admin} tách
+     * bạch với khe của khách ({@code /me/**}) và khe công khai VNPay ({@code /vnpay/**}).</p>
+     *
+     * <p>Mặc định mới nhất trước ({@code createdAt DESC}); phân trang 20 dòng/trang.</p>
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin/refunds")
+    public ResponseEntity<ApiResponse<PageResponse<RefundAdminResponse>>> getRefunds(
+            @RequestParam(required = false) RefundStatus status,
+            @ParameterObject
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<PageResponse<RefundAdminResponse>>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("Refunds retrieved successfully")
+                        .result(paymentService.getRefunds(status, pageable))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /**
+     * Shop xác nhận đã <b>thu tiền mặt</b> cho một đơn COD.
+     *
+     * <p><b>Chỉ {@code ADMIN}.</b> Khác hẳn các endpoint {@code /me/...}: đây là thao tác của shop
+     * trên đơn của khách, không lọc theo người đang đăng nhập — nên <b>không</b> nhận
+     * {@code @AuthenticationPrincipal} để scope theo chủ sở hữu.</p>
+     *
+     * <p><b>POST:</b> đây là thao tác ghi (đổi payment sang {@code PAID}). Idempotent — bấm nhiều
+     * lần trên đơn đã thu tiền trả về cùng kết quả và không dời mốc {@code paidAt}.</p>
+     *
+     * <p>Đặt dưới tiền tố {@code /cod/} chứ không phải {@code /me/} hay {@code /vnpay/}: segment
+     * {@code cod} là literal, tách bạch với khe công khai {@code /payments/vnpay/**} và với khe
+     * của khách {@code /payments/me/**}.</p>
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/cod/{orderNumber}/confirm")
+    public ResponseEntity<ApiResponse<PaymentResponse>> confirmCodPayment(
+            @PathVariable String orderNumber,
+            HttpServletRequest request) {
+
+        return ResponseEntity.ok(
+                ApiResponse.<PaymentResponse>builder()
+                        .code(HttpStatus.OK.value())
+                        .message("COD payment marked as collected")
+                        .result(paymentService.confirmCodPayment(orderNumber))
                         .path(request.getRequestURI())
                         .build()
         );

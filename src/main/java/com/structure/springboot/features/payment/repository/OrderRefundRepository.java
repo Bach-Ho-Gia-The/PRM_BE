@@ -1,6 +1,10 @@
 package com.structure.springboot.features.payment.repository;
 
+import com.structure.springboot.features.payment.dto.projection.RefundAdminView;
 import com.structure.springboot.features.payment.entity.OrderRefundEntity;
+import com.structure.springboot.features.payment.enums.RefundStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -13,9 +17,9 @@ import java.util.UUID;
  * <p><b>Chỉ derived query, không {@code @Query}</b>: mọi truy vấn cần dùng đều là một điều kiện
  * đơn giản trên một bảng. Thêm JPQL viết tay ở đây chỉ làm khó người đọc mà không nhanh hơn.</p>
  *
- * <p><b>Chỉ khai đúng hai hàm đợt này thật sự gọi tới.</b> Endpoint admin đọc danh sách khoản hoàn
- * thuộc đợt sau — lúc đó mới thêm hàm cho nó. Khai sẵn bây giờ là tạo ra method không có đường
- * chạy, đúng loại lỗi đã gặp với ba trạng thái payment không ai sinh ra được.</p>
+ * <p>Hai hàm đầu phục vụ luồng ghi hoàn tiền (CK-6). Hai hàm trả {@link RefundAdminView} phục vụ
+ * màn danh sách của shop (CK-7a) — đọc bằng projection đóng để một câu SQL có sẵn {@code join
+ * orders}, tránh N+1 khi hiển thị số đơn và tên khách.</p>
  */
 @Repository
 public interface OrderRefundRepository extends JpaRepository<OrderRefundEntity, UUID> {
@@ -38,4 +42,26 @@ public interface OrderRefundRepository extends JpaRepository<OrderRefundEntity, 
      * {@code exists} thay vì tải cả bản ghi lên — chỉ cần biết có hay không.</p>
      */
     boolean existsByOrderId(UUID orderId);
+
+    /**
+     * Danh sách khoản hoàn <b>theo một trạng thái</b>, cho màn quản trị khi shop lọc
+     * {@code ?status=}.
+     *
+     * <p>Trả projection {@link RefundAdminView} nên câu SQL chỉ {@code select} vài cột và
+     * {@code join orders} đúng một lần. Thứ tự do {@link Pageable} quyết định (controller mặc định
+     * {@code createdAt DESC} — mới nhất trước).</p>
+     */
+    Page<RefundAdminView> findByStatus(RefundStatus status, Pageable pageable);
+
+    /**
+     * <b>Tất cả</b> khoản hoàn, khi shop không lọc trạng thái.
+     *
+     * <p><b>Vì sao {@code findByCreatedAtNotNull} chứ không {@code findAll}:</b> cần trả
+     * {@link RefundAdminView} (projection) để tránh N+1, mà {@code JpaRepository.findAll(Pageable)}
+     * chỉ trả về entity. Một derived query cần ít nhất một điều kiện; {@code createdAt} là
+     * {@code @CreationTimestamp nullable=false} nên luôn có giá trị, khiến điều kiện "không null"
+     * khớp đúng mọi dòng đã lưu — tức là "lấy tất cả" mà vẫn là derived query, không phải viết
+     * {@code @Query}.</p>
+     */
+    Page<RefundAdminView> findByCreatedAtNotNull(Pageable pageable);
 }

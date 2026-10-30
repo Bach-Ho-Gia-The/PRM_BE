@@ -2,12 +2,15 @@ package com.structure.springboot.features.payment.service.impl;
 
 import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
+import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.order.enums.OrderStatus;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.dto.projection.RefundAdminView;
 import com.structure.springboot.features.payment.dto.request.VnpayPaymentRequest;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.RefundAdminResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.OrderRefundEntity;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
@@ -22,6 +25,8 @@ import com.structure.springboot.features.payment.repository.PaymentRepository;
 import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.infrastructure.external.vnpay.VnpayPaymentUrlBuilder;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -102,6 +107,68 @@ public class PaymentServiceImpl implements PaymentService {
                 .map(paymentMapper::toResponse)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
                         "This order has no payment record: " + orderNumber));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<RefundAdminResponse> getRefunds(RefundStatus status, Pageable pageable) {
+        // Hai đường truy vấn khác nhau đúng chỗ lọc: có status thì findByStatus, không thì lấy tất
+        // cả. Cả hai đều trả projection nên không N+1. Không gom thành một spec vì chỉ một bộ lọc
+        // tuỳ chọn — một câu if đọc là hiểu, không cần JpaSpecificationExecutor.
+        Page<RefundAdminView> page = status == null
+                ? orderRefundRepository.findByCreatedAtNotNull(pageable)
+                : orderRefundRepository.findByStatus(status, pageable);
+
+        return PageResponse.from(page.map(this::toRefundAdminResponse));
+    }
+
+    /** Trải phẳng projection lồng thành record phẳng trả ra API. */
+    private RefundAdminResponse toRefundAdminResponse(RefundAdminView view) {
+        return new RefundAdminResponse(
+                view.getId(),
+                view.getOrder().getOrderNumber(),
+                view.getOrder().getReceiverName(),
+                view.getAmount(),
+                view.getReason(),
+                view.getStatus(),
+                view.getCreatedAt());
+    }
+
+    @Override
+    @Transactional
+    public PaymentResponse confirmCodPayment(String orderNumber) {
+        // Khoá đơn: hai nhân viên cùng bấm "đã thu tiền", hoặc một bên xác nhận thu tiền trong khi
+        // bên kia đang huỷ đơn — khoá dòng đơn làm hai luồng xếp hàng thay vì cùng đọc ra PENDING.
+        OrderEntity order = orderRepository.findForUpdateByOrderNumber(normalizeOrderNumber(orderNumber))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        requireCodCollectable(order);
+
+        PaymentEntity payment = paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "This order has no payment record: " + orderNumber));
+
+        // Idempotent: đã PAID rồi thì trả nguyên trạng thái hiện tại và KHÔNG ghi đè paidAt. Thu
+        // tiền là sự kiện một lần; bấm lại không được dời mốc thời gian đã thu.
+        if (payment.getStatus() == PaymentStatus.PAID) {
+            return paymentMapper.toResponse(payment);
+        }
+
+        // Chỉ lần thử đang PENDING mới thu được. COD chỉ có đúng một lần thử, giữ PENDING cho tới
+        // khi thu tiền; mọi trạng thái đã đóng khác là bất thường và không được âm thầm ghi đè PAID.
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This payment is " + payment.getStatus() + " and cannot be marked as paid");
+        }
+
+        payment.setStatus(PaymentStatus.PAID);
+        // paidAt = lúc shop xác nhận. COD không qua cổng nên không có vnp_PayDate; now() là mốc đúng.
+        payment.setPaidAt(Instant.now());
+
+        // KHÔNG đổi trạng thái đơn: thu tiền mặt không phải bước xác nhận hay hoàn tất đơn. Đơn đi
+        // tiếp theo luồng giao hàng của nó. Cùng nguyên tắc với VNPay — trả tiền không tự duyệt đơn.
+        return paymentMapper.toResponse(payment);
     }
 
     @Override
@@ -244,6 +311,31 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         payment.setStatus(target);
+    }
+
+    /**
+     * Đơn có đủ điều kiện để shop xác nhận đã thu tiền mặt hay không.
+     *
+     * <p>Mọi nhánh đều là lỗi <b>nghiệp vụ do client</b> (shop bấm trên đơn sai trạng thái) nên
+     * dùng {@link ApiException} 409, giống {@link #requirePayableByVnpay}.</p>
+     *
+     * <p>Chặn {@code CANCELLED} bằng nhánh riêng, trước nhánh "phải SHIPPING/COMPLETED": đơn đã huỷ
+     * là ca cần thông điệp rõ ràng cho shop, không gộp chung với "đơn chưa giao".</p>
+     */
+    private void requireCodCollectable(OrderEntity order) {
+        if (order.getPaymentMethod() != PaymentMethod.COD) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is not cash-on-delivery; cash collection does not apply");
+        }
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is cancelled; cash can no longer be collected");
+        }
+        if (order.getStatus() != OrderStatus.SHIPPING && order.getStatus() != OrderStatus.COMPLETED) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "Cash can only be collected once the order is shipping or completed, not "
+                            + order.getStatus());
+        }
     }
 
     /**

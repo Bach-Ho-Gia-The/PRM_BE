@@ -1,11 +1,15 @@
 package com.structure.springboot.features.payment.service;
 
+import com.structure.springboot.common.response.PageResponse;
 import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.RefundAdminResponse;
 import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
 import com.structure.springboot.features.payment.entity.PaymentEntity;
 import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
 import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.enums.RefundStatus;
+import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -37,6 +41,46 @@ public interface PaymentService {
 
     /** Trạng thái thanh toán của một đơn của chính khách đang đăng nhập. Chỉ đọc. */
     PaymentResponse getMyPayment(UUID accountId, String orderNumber);
+
+    /**
+     * Shop xác nhận <b>đã thu tiền mặt</b> cho một đơn COD.
+     *
+     * <p>Đây là thao tác của shop trên đơn của khách, không phải của chính khách — phân quyền
+     * {@code ADMIN} nằm ở controller. Khác hẳn thanh toán VNPay: COD không đi qua cổng, nên không
+     * có IPN tự xác nhận; chính shop là người bấm "đã thu tiền" khi giao hàng.</p>
+     *
+     * <h2>Điều kiện — chốt cứng</h2>
+     * <ul>
+     *   <li>Chỉ đơn <b>COD</b>. Đơn chuyển khoản dùng luồng VNPay, không dùng hàm này.</li>
+     *   <li>Chỉ khi đơn đã <b>{@code SHIPPING}</b> hoặc <b>{@code COMPLETED}</b>: tiền mặt chỉ thu
+     *       được khi hàng đã rời kho tới tay khách.</li>
+     *   <li>Đơn <b>{@code CANCELLED}</b> ⇒ từ chối (409): đơn đã huỷ thì không còn gì để thu.</li>
+     * </ul>
+     *
+     * <h2>Hệ quả</h2>
+     * <ul>
+     *   <li>Payment của đơn chuyển sang {@code PAID}, {@code paidAt} = <b>lúc xác nhận</b>.</li>
+     *   <li><b>KHÔNG đổi trạng thái đơn</b>: thu tiền không phải là xác nhận hay hoàn tất đơn. Đơn
+     *       vẫn đi theo luồng giao hàng của nó.</li>
+     *   <li><b>Idempotent</b>: gọi lại trên payment đã {@code PAID} trả về kết quả hiện tại và
+     *       <b>không ghi đè {@code paidAt}</b> — thu tiền là sự kiện một lần.</li>
+     * </ul>
+     *
+     * @param orderNumber mã đơn in trên hoá đơn
+     * @return trạng thái thanh toán sau khi xác nhận
+     */
+    PaymentResponse confirmCodPayment(String orderNumber);
+
+    /**
+     * Danh sách khoản hoàn cho màn quản trị của shop.
+     *
+     * <p>Phân trang, lọc theo trạng thái nếu truyền {@code status}, mới nhất trước (do thứ tự của
+     * {@code pageable}). Đọc bằng projection đóng nên không N+1 dù mỗi dòng cần số đơn và tên khách.</p>
+     *
+     * @param status trạng thái cần lọc, {@code null} = lấy tất cả
+     * @param pageable trang và thứ tự; controller mặc định {@code createdAt DESC}
+     */
+    PageResponse<RefundAdminResponse> getRefunds(RefundStatus status, Pageable pageable);
 
     /**
      * Đóng lần thử thanh toán đang mở của một đơn vừa bị huỷ, đánh dấu {@code CANCELLED}.
