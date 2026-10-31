@@ -95,7 +95,6 @@ spring:
   # Không cấu hình spring.security.oauth2.client: dự án đi đường "frontend lấy ID token rồi
   # gửi về backend" (POST /auth/google), backend không tham gia luồng redirect nên không cần
   # client-secret lẫn registration. Client ID nằm ở app.auth.google.client-id bên dưới.
-
 # ==========================================
 # CẤU HÌNH HỆ THỐNG DÙNG CHUNG (CORE APP)
 # ==========================================
@@ -130,7 +129,13 @@ app:
       max-attempts-per-ip: ${LOGIN_MAX_ATTEMPTS_PER_IP:20}
       lock-duration: ${LOGIN_LOCK_DURATION:15m}
     # Category/Product public có tiền tố /id và /slug; /categories/admin và /products/admin không được mở.
-    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**,/stores,/stores/id/**"
+    # /vnpay/** là endpoint VNPay gọi vào: IPN (server-to-server) và Return (trình duyệt khách).
+    # Hai endpoint này KHÔNG thể yêu cầu đăng nhập — VNPay không có token của mình, và khách thì
+    # đang ở trong trình duyệt chứ không phải app.
+    # ⚠ Cố ý KHÔNG đặt dưới /payments: whitelist khớp theo ĐƯỜNG DẪN, KHÔNG phân biệt HTTP method,
+    #   nên mở một nhánh trong /payments là mở luôn mọi thứ khác nằm trong nhánh đó.
+    # Tự vệ bằng chữ ký HMAC-SHA512 bên trong service, không bằng tầng bảo mật.
+    whitelist: "/auth/**,/categories,/categories/id/**,/categories/slug/**,/products,/products/id/**,/products/slug/**,/collections,/collections/slug/**,/stores,/stores/id/**,/payments/vnpay/**"
   # ==========================================
   # QUY TẮC ĐẶT HÀNG
   # ==========================================
@@ -138,6 +143,35 @@ app:
     # Phí ship mặc định. Miễn phí khi chuyển khoản hoặc khi đơn đạt ngưỡng bên dưới.
     shipping-fee: ${ORDER_SHIPPING_FEE:30000}
     free-shipping-threshold: ${ORDER_FREE_SHIPPING_THRESHOLD:1000000}
+    # Hạn thanh toán của đơn (đơn BANK_TRANSFER). COD không có hạn.
+    # ⚠ Đặt ở đây chứ không ở app.payment.vnpay: đây là luật của ĐƠN HÀNG, không phải của
+    #   cổng thanh toán. order KHÔNG biết payment là ai — chiều phụ thuộc chỉ một hướng.
+    # ⚠ Áp trần 30m trong OrderProperties: gõ nhầm "15s"/"15d" thì app không khởi động,
+    #   thay vì âm thầm tự huỷ mọi đơn.
+    payment-timeout: ${ORDER_PAYMENT_TIMEOUT:15m}
+
+    # ==========================================
+    # TÁC VỤ QUÉT ĐƠN HẾT HẠN (OrderExpiryScheduler)
+    # ==========================================
+    # ⚠ Tách khỏi app.order ở trên: trên là chính sách kinh doanh (vận hành chỉnh theo đợt),
+    #   dưới đây là tham số vận hành kỹ thuật của một tác vụ chạy nền.
+    # ⚠ OrderExpiryProperties chặn sai cấu hình lúc khởi động: scan-interval phải trong
+    #   [30s, 10m], batch-size trong [1, 500], max-query-attempts trong [1, 20].
+    expiry:
+      # Nhịp quét. Đơn chỉ quá hạn theo phút, nên quét dày hơn 30s không thêm đơn nào được xử lý.
+      scan-interval: ${ORDER_EXPIRY_SCAN_INTERVAL:1m}
+      # Chờ trước lượt đầu: không quét trong lúc ứng dụng còn đang nạp bean.
+      scan-initial-delay: ${ORDER_EXPIRY_SCAN_INITIAL_DELAY:30s}
+      # Đơn chưa có kết luận rõ ràng thì chờ bao lâu mới hỏi lại VNPay.
+      retry-delay: ${ORDER_EXPIRY_RETRY_DELAY:5m}
+      # Số đơn tối đa mỗi lượt. Mỗi đơn là một câu hỏi sang VNPay.
+      batch-size: ${ORDER_EXPIRY_BATCH_SIZE:100}
+      # Hỏi lại tối đa bao nhiêu lần cho một đơn không có kết luận. Chạm trần thì thôi và
+      # ghi log WARN để người vận hành kiểm tra tay.
+      max-query-attempts: ${ORDER_EXPIRY_MAX_QUERY_ATTEMPTS:5}
+      # Chỉ xét đơn có hạn thanh toán trong vòng bao nhiêu giờ gần đây. Cận dưới này chặn
+      # trường hợp sau khi restart, đơn bỏ quên từ lâu ùa vào lượt quét đầu tiên.
+      max-age-hours: ${ORDER_EXPIRY_MAX_AGE_HOURS:24}
 
   jwt:
     secret: ${JWT_SIGNER_KEY:defaultSecretKeyForLocalDevMustBeAtLeast32BytesLong123456}
@@ -165,6 +199,21 @@ app:
     max-sends-per-hour: ${OTP_MAX_SENDS_PER_HOUR:5}
     register-ttl-seconds: ${OTP_REGISTER_TTL_SECONDS:600}
     resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:20}
+
+  payment:
+    vnpay:
+      tmn-code: ${VNPAY_TMN_CODE}
+      hash-secret: ${VNPAY_HASH_SECRET}
+      payment-url: ${VNPAY_PAYMENT_URL}
+      api-url: ${VNPAY_API_URL}
+      return-url: ${VNPAY_RETURN_URL:http://localhost:${SERVER_PORT}${CONTEXT_PATH}/payments/vnpay/return}
+
+      version: "2.1.0"
+      command: pay
+      currency: VND
+      locale: vn
+      order-type: other
+      zone-id: Asia/Ho_Chi_Minh
 
 # ==========================================
 # CLOUDIRARY - UPLOAD ẢNH

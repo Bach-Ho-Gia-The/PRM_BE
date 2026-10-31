@@ -10,6 +10,7 @@ import com.structure.springboot.features.order.entity.OrderEntity;
 import com.structure.springboot.features.order.enums.PaymentMethod;
 import com.structure.springboot.features.order.mapper.OrderMapper;
 import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
 import com.structure.springboot.features.order.service.impl.OrderServiceImpl;
 import com.structure.springboot.features.product.entity.ProductEntity;
 import com.structure.springboot.features.product.entity.ProductVariantEntity;
@@ -18,6 +19,8 @@ import com.structure.springboot.features.product.repository.ProductRepository;
 import com.structure.springboot.features.product.repository.ProductVariantRepository;
 import com.structure.springboot.infrastructure.external.brevo.BrevoMailClient;
 import com.structure.springboot.infrastructure.persistence.RecordStatus;
+import com.structure.springboot.features.order.config.OrderExpiryProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +32,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.time.Duration;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,6 +40,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 /**
@@ -52,16 +58,33 @@ class OrderConfirmationMailTest {
     @Mock private ProductVariantRepository variants;
     @Mock private NotificationService notifications;
     @Mock private BrevoMailClient mail;
+    @Mock private PaymentService payments;
     private OrderServiceImpl service;
 
     private AccountEntity account;
     private ProductEntity product;
 
+
+    private final OrderExpiryCooldown cooldown = mock(OrderExpiryCooldown.class);
+    private final OrderExpiryProperties expiryProperties = new OrderExpiryProperties(
+            Duration.ofMinutes(1), Duration.ofSeconds(30), Duration.ofMinutes(5), 100, 5, 24);
+
+    @SuppressWarnings("unchecked")
+    private final ObjectProvider<OrderService> provider = mockProvider();
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<OrderService> mockProvider() {
+        ObjectProvider<OrderService> provider = mock(ObjectProvider.class);
+        lenient().when(provider.getObject()).thenReturn(mock(OrderService.class));
+        return provider;
+    }
+
     @BeforeEach
     void setUp() {
         OrderMapper mapper = Mappers.getMapper(OrderMapper.class);
         service = new OrderServiceImpl(orders, accounts, products, variants, mapper,
-                notifications, mail, new OrderProperties(null, null));
+                notifications, mail, new OrderProperties(null, null, null), payments,
+                expiryProperties, cooldown, provider);
 
         account = new AccountEntity();
         account.setId(UUID.randomUUID());
@@ -80,9 +103,9 @@ class OrderConfirmationMailTest {
         variant.setId(UUID.randomUUID());
         when(accounts.findById(account.getId())).thenReturn(Optional.of(account));
         when(products.findByIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(product));
-        when(variants.findByProductIdIn(anyCollection())).thenReturn(List.of(variant));
+        when(variants.findByProductIdInOrderByIdAsc(anyCollection())).thenReturn(List.of(variant));
         when(orders.existsByOrderNumber(any())).thenReturn(false);
-        when(orders.save(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
+        when(orders.saveAndFlush(any(OrderEntity.class))).thenAnswer(call -> call.getArgument(0));
     }
 
     private OrderRequest request(String email) {

@@ -9,11 +9,25 @@ import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
 
+import java.time.Instant;
+
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface OrderMapper {
 
-    @Mapping(target = "accountId", source = "account.id")
-    OrderResponse toResponse(OrderEntity entity);
+    /**
+     * @param paidAt thời điểm đã trả tiền, {@code null} nếu chưa. Truyền riêng vì nó thuộc feature
+     *               payment, không nằm trên {@link OrderEntity} — mapper cố ý không tự đi lấy, để
+     *               tầng nào quyết định việc gọi payment service.
+     *               <p>{@code paymentDueAt} thì KHÔNG cần truyền: nó là field cùng tên trên entity
+     *               nên MapStruct tự map.</p>
+     *               <p><b>Vì sao {@code source} phải ghi {@code entity.account.id} chứ không
+     *               {@code account.id}:</b> khi method có từ hai tham số trở lên, MapStruct bắt buộc
+     *               mọi đường dẫn nguồn phải bắt đầu bằng <b>tên tham số</b> — nếu không nó không
+     *               biết lấy {@code account} từ {@code entity} hay từ {@code paidAt}. Ghi thiếu tiền
+     *               tố là lỗi biên dịch, không phải lỗi lúc chạy.</p>
+     */
+    @Mapping(target = "accountId", source = "entity.account.id")
+    OrderResponse toResponse(OrderEntity entity, Instant paidAt);
 
     @Mapping(target = "productId", source = "product.id")
     OrderItemResponse toItemResponse(OrderItemEntity entity);

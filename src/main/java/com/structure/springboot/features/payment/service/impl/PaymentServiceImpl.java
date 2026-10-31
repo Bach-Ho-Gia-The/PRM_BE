@@ -1,0 +1,444 @@
+package com.structure.springboot.features.payment.service.impl;
+
+import com.structure.springboot.common.exception.ApiException;
+import com.structure.springboot.common.exception.ErrorCode;
+import com.structure.springboot.common.response.PageResponse;
+import com.structure.springboot.features.order.entity.OrderEntity;
+import com.structure.springboot.features.order.enums.OrderStatus;
+import com.structure.springboot.features.order.enums.PaymentMethod;
+import com.structure.springboot.features.order.repository.OrderRepository;
+import com.structure.springboot.features.payment.dto.projection.RefundAdminView;
+import com.structure.springboot.features.payment.dto.request.VnpayPaymentRequest;
+import com.structure.springboot.features.payment.dto.response.PaymentResponse;
+import com.structure.springboot.features.payment.dto.response.RefundAdminResponse;
+import com.structure.springboot.features.payment.dto.response.VnpayPaymentUrlResponse;
+import com.structure.springboot.features.payment.entity.OrderRefundEntity;
+import com.structure.springboot.features.payment.entity.PaymentEntity;
+import com.structure.springboot.features.payment.enums.PaymentStatus;
+import com.structure.springboot.features.payment.dto.response.VnpayQueryResult;
+import com.structure.springboot.features.payment.enums.RefundReason;
+import com.structure.springboot.features.payment.service.VnpayQueryService;
+import com.structure.springboot.features.payment.enums.RefundStatus;
+import com.structure.springboot.features.payment.mapper.PaymentMapper;
+import com.structure.springboot.features.payment.repository.OrderRefundRepository;
+import com.structure.springboot.features.payment.repository.PaymentRepository;
+import com.structure.springboot.features.payment.service.PaymentService;
+import com.structure.springboot.infrastructure.external.vnpay.VnpayPaymentUrlBuilder;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class PaymentServiceImpl implements PaymentService {
+
+    private final PaymentRepository paymentRepository;
+    private final OrderRefundRepository orderRefundRepository;
+    private final OrderRepository orderRepository;
+    private final PaymentMapper paymentMapper;
+    private final VnpayPaymentUrlBuilder vnpayPaymentUrlBuilder;
+    private final VnpayQueryService vnpayQueryService;
+
+    @Override
+    @Transactional
+    public PaymentEntity createFirstAttempt(OrderEntity order) {
+        return paymentRepository.save(PaymentEntity.builder()
+                .order(order)
+                .txnRef(newTxnRef())
+                // Số tiền phải là tổng đơn khách thực trả, gồm cả phí ship — không phải subtotal.
+                .amount(order.getTotal())
+                .status(PaymentStatus.PENDING)
+                // Sao chép hạn từ ĐƠN, không tự tính: mọi lần thử sau cũng phải dùng đúng hạn này.
+                // COD thì order.paymentDueAt = null ⇒ payment cũng không có hạn.
+                .expiresAt(order.getPaymentDueAt())
+                .attemptNo(1)
+                .build());
+    }
+
+    @Override
+    @Transactional
+    public VnpayPaymentUrlResponse startVnpayPayment(UUID accountId, String orderNumber, String clientIp) {
+        // Khoá đơn: hai request bấm "thanh toán" cùng lúc không được cùng sinh ra một lần thử mới,
+        // và không được cùng đọc ra số lần thử cũ rồi đội số của nhau.
+        OrderEntity order = orderRepository.findForUpdateByOrderNumberAndAccountId(
+                        normalizeOrderNumber(orderNumber), accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        requirePayableByVnpay(order);
+
+        PaymentEntity payment = resolveAttemptFor(order);
+
+        String paymentUrl = vnpayPaymentUrlBuilder.build(new VnpayPaymentRequest(
+                payment.getTxnRef(),
+                payment.getAmount(),
+                payment.getCreatedAt(),
+                payment.getExpiresAt(),
+                clientIp
+        ));
+
+        return new VnpayPaymentUrlResponse(
+                paymentUrl,
+                payment.getTxnRef(),
+                payment.getAmount(),
+                payment.getStatus(),
+                payment.getExpiresAt()
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PaymentResponse getMyPayment(UUID accountId, String orderNumber) {
+        // Tra đơn trước để dùng lại đúng câu lọc chủ sở hữu: khách không xem được thanh toán của
+        // đơn người khác, và nhận 404 chứ không 403 (không để lộ đơn có tồn tại hay không).
+        OrderEntity order = orderRepository.findByOrderNumberAndAccountId(
+                        normalizeOrderNumber(orderNumber), accountId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .map(paymentMapper::toResponse)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "This order has no payment record: " + orderNumber));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<RefundAdminResponse> getRefunds(RefundStatus status, Pageable pageable) {
+        // Hai đường truy vấn khác nhau đúng chỗ lọc: có status thì findByStatus, không thì lấy tất
+        // cả. Cả hai đều trả projection nên không N+1. Không gom thành một spec vì chỉ một bộ lọc
+        // tuỳ chọn — một câu if đọc là hiểu, không cần JpaSpecificationExecutor.
+        Page<RefundAdminView> page = status == null
+                ? orderRefundRepository.findByCreatedAtNotNull(pageable)
+                : orderRefundRepository.findByStatus(status, pageable);
+
+        return PageResponse.from(page.map(this::toRefundAdminResponse));
+    }
+
+    /** Trải phẳng projection lồng thành record phẳng trả ra API. */
+    private RefundAdminResponse toRefundAdminResponse(RefundAdminView view) {
+        return new RefundAdminResponse(
+                view.getId(),
+                view.getOrder().getOrderNumber(),
+                view.getOrder().getReceiverName(),
+                view.getAmount(),
+                view.getReason(),
+                view.getStatus(),
+                view.getCreatedAt());
+    }
+
+    @Override
+    @Transactional
+    public PaymentResponse confirmCodPayment(String orderNumber) {
+        // Khoá đơn: hai nhân viên cùng bấm "đã thu tiền", hoặc một bên xác nhận thu tiền trong khi
+        // bên kia đang huỷ đơn — khoá dòng đơn làm hai luồng xếp hàng thay vì cùng đọc ra PENDING.
+        OrderEntity order = orderRepository.findForUpdateByOrderNumber(normalizeOrderNumber(orderNumber))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "Order not found with number: " + orderNumber));
+
+        requireCodCollectable(order);
+
+        PaymentEntity payment = paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,
+                        "This order has no payment record: " + orderNumber));
+
+        // Idempotent: đã PAID rồi thì trả nguyên trạng thái hiện tại và KHÔNG ghi đè paidAt. Thu
+        // tiền là sự kiện một lần; bấm lại không được dời mốc thời gian đã thu.
+        if (payment.getStatus() == PaymentStatus.PAID) {
+            return paymentMapper.toResponse(payment);
+        }
+
+        // Chỉ lần thử đang PENDING mới thu được. COD chỉ có đúng một lần thử, giữ PENDING cho tới
+        // khi thu tiền; mọi trạng thái đã đóng khác là bất thường và không được âm thầm ghi đè PAID.
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This payment is " + payment.getStatus() + " and cannot be marked as paid");
+        }
+
+        payment.setStatus(PaymentStatus.PAID);
+        // paidAt = lúc shop xác nhận. COD không qua cổng nên không có vnp_PayDate; now() là mốc đúng.
+        payment.setPaidAt(Instant.now());
+
+        // KHÔNG đổi trạng thái đơn: thu tiền mặt không phải bước xác nhận hay hoàn tất đơn. Đơn đi
+        // tiếp theo luồng giao hàng của nó. Cùng nguyên tắc với VNPay — trả tiền không tự duyệt đơn.
+        return paymentMapper.toResponse(payment);
+    }
+
+    @Override
+    @Transactional
+    public void releaseForOrderCancel(OrderEntity order) {
+        closeOpenAttempt(order, PaymentStatus.CANCELLED);
+    }
+
+    @Override
+    @Transactional
+    public void expireForOrder(OrderEntity order) {
+        closeOpenAttempt(order, PaymentStatus.EXPIRED);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Instant findPaidAtForOrder(UUID orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(orderId)
+                .map(PaymentEntity::getPaidAt)
+                .orElse(null);
+    }
+
+    @Override
+    @Transactional
+    public Optional<OrderEntity> findOrderForConfirmation(UUID orderId) {
+        if (orderId == null) {
+            return Optional.empty();
+        }
+        // Finder CÓ khoá, không phải findById — xem javadoc ở interface. Đừng "toi ưu" thành
+        // findById: mất khoá là mở lại đúng khe tranh chấp mà hàm này sinh ra để bịt.
+        return orderRepository.findForUpdateWithItemsById(orderId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public VnpayQueryResult queryVnpayForOrder(OrderEntity order) {
+        if (order == null || order.getId() == null) {
+            return VnpayQueryResult.unknown("No order to query");
+        }
+
+        // "Lần thử mới nhất" là bản ghi khách vừa thao tác. Nếu lần thử trước đó đã thu được tiền
+        // thì chặng chốt của tác vụ quét sẽ thấy qua hasPaidPayment — câu trả lời ở đây không phải
+        // tiếng nói cuối cùng.
+        return paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .map(vnpayQueryService::query)
+                .orElseGet(() -> VnpayQueryResult.unknown("Order has no payment attempt"));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasPaidPayment(UUID orderId) {
+        if (orderId == null) {
+            return false;
+        }
+        // Derived query CÓ SẴN từ CK-2, không thêm finder mới: existsByOrderIdAndStatus sinh ra
+        // đúng câu "có tồn tại payment PAID của đơn này không", và dùng index sẵn có trên order_id.
+        //
+        // Cố ý dùng exists...ByStatus chứ không lấy lần thử mới nhất rồi so trạng thái: khách có
+        // thể thử nhiều lần, và câu hỏi đúng KHÔNG phải "lần gần nhất có PAID không" mà là "đã có
+        // lần nào PAID chưa". Lần thử sau cùng có thể FAILED trong khi lần trước đã thu tiền.
+        return paymentRepository.existsByOrderIdAndStatus(orderId, PaymentStatus.PAID);
+    }
+
+    @Override
+    @Transactional
+    public void requestRefundIfPaid(OrderEntity order, RefundReason reason) {
+        if (order == null || order.getId() == null) {
+            return;
+        }
+
+        // Tìm ĐÚNG lần thử đã thu được tiền, không phải lần mới nhất: một đơn có thể có nhiều lần
+        // thử và con trỏ hoàn tiền phải trỏ vào bản ghi thật sự có tiền vào.
+        Optional<PaymentEntity> paidPayment = paymentRepository
+                .findFirstByOrderIdOrderByAttemptNoDesc(order.getId())
+                .filter(payment -> payment.getStatus() == PaymentStatus.PAID);
+
+        if (paidPayment.isEmpty()) {
+            // Ca thường gặp nhất: huỷ đơn chưa thanh toán. Không có tiền vào thì không có gì để
+            // hoàn, và đây KHÔNG phải lỗi.
+            return;
+        }
+
+        // Kiểm trước rồi mới ghi: ràng buộc unique trên order_id là lớp chặn cuối, nhưng để nó
+        // ném ra thì phải bắt exception và đoán xem có phải trùng hay không. Kiểm trước thì
+        // trường hợp "sự kiện đến lần thứ hai" được xử lý bằng một câu if đọc là hiểu.
+        if (orderRefundRepository.existsByOrderId(order.getId())) {
+            return;
+        }
+
+        PaymentEntity payment = paidPayment.get();
+
+        // amount lấy từ payments.amount chứ KHÔNG phải orders.total: đây là số tiền thực sự đã
+        // thu. Xem javadoc OrderRefundEntity để biết vì sao hai con số này có thể lệch.
+        orderRefundRepository.save(OrderRefundEntity.builder()
+                .order(order)
+                .payment(payment)
+                .amount(payment.getAmount())
+                .status(RefundStatus.PENDING)
+                .reason(reason)
+                .build());
+    }
+
+    /**
+     * Khuôn chung cho hai đường đóng payment — <b>chỉ khác trạng thái đích</b>.
+     *
+     * <p>Tách ra vì hai hàm gọi nó phải hành xử y hệt nhau ở mọi nhánh còn lại. Nếu mỗi hàm tự
+     * viết, sớm muộn sẽ có một bản quên nhánh "PAID thì không đụng" và ghi đè mất dấu vết một giao
+     * dịch đã thu được tiền — loại lỗi không thể phát hiện bằng mắt trên dữ liệu.</p>
+     *
+     * <p><b>Vì sao chỉ xét payment mới nhất:</b> chỉ bản mới nhất mới có thể còn {@code PENDING}.
+     * Các bản cũ đã dứt điểm theo đúng luật "chỉ sinh lần thử mới khi lần trước đã thất bại". Quét
+     * toàn bộ là việc làm vô nghĩa và còn che mất dấu vết lịch sử.</p>
+     *
+     * <p>Không {@code save} khi không đổi gì: {@code @Transactional} cộng với entity đang được quản
+     * lý thì thay đổi tự được ghi ra khi commit; gọi {@code save} thừa chỉ tổ sinh thêm một câu
+     * UPDATE rỗng.</p>
+     */
+    private void closeOpenAttempt(OrderEntity order, PaymentStatus target) {
+        if (order == null || order.getId() == null) {
+            return;
+        }
+
+        Optional<PaymentEntity> lastAttempt =
+                paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId());
+
+        if (lastAttempt.isEmpty()) {
+            // Đơn tạo trước CK-2 chưa có bản ghi payment nào — không có gì để đóng.
+            return;
+        }
+
+        PaymentEntity payment = lastAttempt.get();
+
+        // PAID: tiền đã về. Ghi đè thành CANCELLED/EXPIRED là làm mất sự thật quan trọng nhất
+        // trong toàn bộ hệ thống. Phần hoàn tiền thuộc luồng khác.
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            return;
+        }
+
+        payment.setStatus(target);
+    }
+
+    /**
+     * Đơn có đủ điều kiện để shop xác nhận đã thu tiền mặt hay không.
+     *
+     * <p>Mọi nhánh đều là lỗi <b>nghiệp vụ do client</b> (shop bấm trên đơn sai trạng thái) nên
+     * dùng {@link ApiException} 409, giống {@link #requirePayableByVnpay}.</p>
+     *
+     * <p>Chặn {@code CANCELLED} bằng nhánh riêng, trước nhánh "phải SHIPPING/COMPLETED": đơn đã huỷ
+     * là ca cần thông điệp rõ ràng cho shop, không gộp chung với "đơn chưa giao".</p>
+     */
+    private void requireCodCollectable(OrderEntity order) {
+        if (order.getPaymentMethod() != PaymentMethod.COD) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is not cash-on-delivery; cash collection does not apply");
+        }
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is cancelled; cash can no longer be collected");
+        }
+        if (order.getStatus() != OrderStatus.SHIPPING && order.getStatus() != OrderStatus.COMPLETED) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "Cash can only be collected once the order is shipping or completed, not "
+                            + order.getStatus());
+        }
+    }
+
+    /**
+     * Đơn có được phép mở link VNPay hay không.
+     *
+     * <p>Mọi nhánh đều là lỗi <b>nghiệp vụ do client</b> gây ra nên dùng {@link ApiException} với
+     * 409, không phải {@code IllegalArgumentException} (thứ dành cho hợp đồng nội bộ bị vi phạm,
+     * sẽ ra 500).</p>
+     */
+    private void requirePayableByVnpay(OrderEntity order) {
+        if (order.getPaymentMethod() != PaymentMethod.BANK_TRANSFER) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is paid on delivery (COD); VNPay is not available");
+        }
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            // Hết hạn cũng dẫn tới đây: quá hạn thì đơn đã bị huỷ và hàng đã trả kho.
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is cancelled and can no longer be paid");
+        }
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new ApiException(ErrorCode.CONFLICT,
+                    "This order is already " + order.getStatus() + " and can no longer be paid");
+        }
+        if (isPastDeadline(order)) {
+            throw new ApiException(ErrorCode.CONFLICT, "Payment has expired");
+        }
+        if (paymentRepository.existsByOrderIdAndStatus(order.getId(), PaymentStatus.PAID)) {
+            throw new ApiException(ErrorCode.CONFLICT, "This order has already been paid");
+        }
+    }
+
+    /**
+     * Quyết định dùng lại lần thử cũ hay mở lần thử mới, rồi trả về bản ghi sẽ dựng link.
+     *
+     * <p><b>Quy tắc đã chốt:</b></p>
+     * <ul>
+     *   <li>{@code PENDING} ⇒ <b>dùng lại</b>: giữ nguyên {@code txnRef} và {@code expiresAt}. Đây
+     *       là cơ chế "mở lại link không gia hạn thêm 15 phút".</li>
+     *   <li>{@code FAILED} ⇒ mở lần thử mới, {@code txnRef} mới, nhưng <b>hạn vẫn là hạn cũ</b>
+     *       (lấy từ đơn, không cộng thêm).</li>
+     *   <li>{@code CANCELLED} ⇒ <b>từ chối</b>. Đây là ca <b>khách chủ động huỷ thanh toán</b>,
+     *       khác hẳn thất bại: huỷ là khách đổi ý, không được tự động mở lần mới. Hai trạng thái do
+     *       hai đường khác nhau ghi (IPN thất bại → {@code FAILED}; khách bấm huỷ → {@code CANCELLED}),
+     *       nên chỉ cần chặn {@code CANCELLED} là đủ để không retry sau khi khách đổi ý.</li>
+     *   <li>{@code EXPIRED} ⇒ <b>từ chối</b>. Đơn đã bị huỷ và hàng đã trả kho; khách phải đặt đơn mới.</li>
+     * </ul>
+     */
+    private PaymentEntity resolveAttemptFor(OrderEntity order) {
+        Optional<PaymentEntity> lastAttempt =
+                paymentRepository.findFirstByOrderIdOrderByAttemptNoDesc(order.getId());
+
+        if (lastAttempt.isEmpty()) {
+            // Đơn tạo trước CK-2 nên chưa có bản ghi payment nào — vẫn phải phục vụ được.
+            return createAttempt(order, 1);
+        }
+
+        PaymentEntity last = lastAttempt.get();
+
+        return switch (last.getStatus()) {
+            case PENDING -> last;
+            case FAILED -> createAttempt(order, last.getAttemptNo() + 1);
+            case CANCELLED -> throw new ApiException(ErrorCode.CONFLICT,
+                    "This payment was cancelled; place a new order to pay again");
+            case EXPIRED -> throw new ApiException(ErrorCode.CONFLICT,
+                    "Payment has expired; place a new order to pay again");
+            case PAID -> throw new ApiException(ErrorCode.CONFLICT, "This order has already been paid");
+        };
+    }
+
+    /**
+     * Mở một lần thử thanh toán mới.
+     *
+     * <p>{@code expiresAt} <b>luôn</b> lấy từ {@code order.paymentDueAt}, không bao giờ tính lại —
+     * đó là điểm chặn việc gia hạn bằng cách bấm thanh toán lại nhiều lần.</p>
+     */
+    private PaymentEntity createAttempt(OrderEntity order, int attemptNo) {
+        return paymentRepository.save(PaymentEntity.builder()
+                .order(order)
+                .txnRef(newTxnRef())
+                .amount(order.getTotal())
+                .status(PaymentStatus.PENDING)
+                .expiresAt(order.getPaymentDueAt())
+                .attemptNo(attemptNo)
+                .build());
+    }
+
+    private boolean isPastDeadline(OrderEntity order) {
+        return order.getPaymentDueAt() != null && !Instant.now().isBefore(order.getPaymentDueAt());
+    }
+
+    /**
+     * {@code txnRef} = UUID <b>bỏ dấu gạch</b>, sinh độc lập cho mỗi lần thử.
+     *
+     * <p>Không nhét số đơn vào đây: payment đã liên kết với đơn qua {@code order_id}. Một UUID 32 ký
+     * tự vừa khớp giới hạn {@code Alphanumeric[1,100]} của VNPay, vừa không thể đoán để dò giao dịch
+     * của đơn khác. Ràng buộc unique trên cột là lớp chặn cuối nếu có trùng.</p>
+     */
+    private String newTxnRef() {
+        return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /** Mã đơn khách đọc trên hoá đơn luôn ở dạng chữ hoa; chuẩn hoá để tra không trượt. */
+    private String normalizeOrderNumber(String orderNumber) {
+        return orderNumber == null ? null : orderNumber.trim().toUpperCase(Locale.ROOT);
+    }
+}
