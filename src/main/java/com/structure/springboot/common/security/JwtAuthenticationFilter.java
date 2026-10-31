@@ -3,6 +3,8 @@ package com.structure.springboot.common.security;
 import com.structure.springboot.common.exception.ApiException;
 import com.structure.springboot.common.exception.ErrorCode;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
@@ -106,18 +108,67 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                 SecurityContextHolder.getContext().setAuthentication(authentication);
 
-            } catch (Exception e) {
-                log.warn("JWT authentication failed: {}", e.getMessage());
-
+            } catch (Exception exception) {
                 // Xóa Cookie tự động theo cấu hình môi trường hiện tại
                 clearAuthCookies(response);
 
-                handlerExceptionResolver.resolveException(request, response, null, e);
+                handlerExceptionResolver.resolveException(request, response, null,
+                        translateAuthFailure(exception));
                 return;
             }
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * Đổi lỗi xác thực thành {@link ApiException} 401 TRƯỚC khi giao cho resolver.
+     *
+     * <p><b>Vì sao bắt buộc phải dịch ở đây:</b> {@code GlobalExceptionHandler} không có
+     * {@code @ExceptionHandler} nào cho {@code JwtException}. Ném thẳng exception gốc vào
+     * resolver thì nó rơi xuống {@code @ExceptionHandler(Exception.class)} và trả <b>500</b>.
+     * Frontend dựa vào 401 để tự động gọi {@code /auth/refresh}; nhận 500 thì nó không refresh,
+     * và vì {@code JWT_ACCESS_TTL=15m} nên cứ 15 phút người dùng lại bị đá ra màn đăng nhập một
+     * lần. Lưu ý {@code SecurityConfig} CÓ {@code authenticationEntryPoint} trả 401 đúng chuẩn,
+     * nhưng nó không bao giờ chạy: filter này {@code return} nên đã cắt ngang chuỗi trước đó.</p>
+     *
+     * <p><b>Vì sao KHÔNG gom tất cả thành 401:</b> khối {@code try} ở trên còn gọi Redis để tra
+     * mốc thu hồi. Redis chết là sự cố hạ tầng, phải trả 5xx. Biến nó thành 401 thì frontend đi
+     * refresh, refresh cũng chết, rồi đá người dùng ra ngoài trong khi tài khoản của họ chẳng
+     * có vấn đề gì. Thứ gì không phải lỗi token thì trả nguyên cho handler #8 lo.</p>
+     *
+     * <p><b>Vì sao dịch tại chỗ thay vì thêm handler toàn cục:</b> trong phạm vi khối try này,
+     * {@code IllegalArgumentException} chỉ có thể đến từ nội dung token. Ra khỏi đây nó mang ý
+     * nghĩa hoàn toàn khác và bị ném ở khắp dự án — bắt nó ở tầng toàn cục sẽ biến hàng loạt bug
+     * 500 thật thành 401 giả, che mất lỗi. Ngoài ra ba ca từ chối phía trên (sai {@code typ},
+     * thiếu {@code sub}, phiên bị thu hồi) vốn đã tự dựng {@code ApiException} ngay trong filter,
+     * nên để nhánh thứ tư ở cùng chỗ thì cả bốn đường từ chối mới nhất quán.</p>
+     */
+    private Exception translateAuthFailure(Exception exception) {
+        // Ba ca filter tự ném ở trên đã là 401 sẵn, giữ nguyên message riêng của từng ca.
+        if (exception instanceof ApiException) {
+            return exception;
+        }
+
+        if (exception instanceof ExpiredJwtException) {
+            // Token hết hạn là nhịp sinh hoạt bình thường, không phải sự cố: trước đây ghi
+            // log.warn ở đây RỒI handler #8 ghi tiếp log.error kèm full stack trace, tức là mỗi
+            // người dùng đang hoạt động sinh ra một stack trace mỗi 15 phút, làm 500 thật chìm
+            // nghỉm trong log. Hạ xuống debug.
+            log.debug("Access token expired: {}", exception.getMessage());
+            return new ApiException(ErrorCode.UNAUTHORIZED, "Access token has expired");
+        }
+
+        if (exception instanceof JwtException || exception instanceof IllegalArgumentException) {
+            // Chữ ký sai hoặc token méo mó thì khác hẳn hết hạn — có thể là dấu hiệu bị dò nên
+            // giữ ở mức warn. Message tách riêng để frontend khỏi gọi refresh một cách vô ích:
+            // token hỏng thì refresh cũng không cứu được, phải đăng nhập lại.
+            log.warn("Rejected an invalid token: {}", exception.getMessage());
+            return new ApiException(ErrorCode.UNAUTHORIZED, "Invalid token");
+        }
+
+        // Không phải lỗi token (Redis chết...) -> trả nguyên để handler #8 xử lý thành 5xx.
+        return exception;
     }
 
     private String extractToken(HttpServletRequest request) {

@@ -570,6 +570,28 @@ Backend thu hồi RT cũ **trước khi** phát RT mới. Hai hệ quả:
 > được nó một lần là có 7 ngày truy cập. Xoay vòng khiến token bị trộm chỉ dùng được tới lần
 > refresh kế tiếp của người dùng thật.
 
+### Interceptor nhận đúng mã nào khi access token hỏng
+
+> 🔧 **Sửa 31/10/2026.** Trước ngày này **mọi lỗi access token đều trả `500`**, không phải `401`
+> — nên interceptor không bao giờ kích hoạt auto-refresh. Nếu app đang có đoạn workaround bắt
+> `500` để đi refresh thì **gỡ đi**, giờ đã đúng chuẩn.
+
+Gọi endpoint cần đăng nhập, access token có vấn đề ⇒ luôn là **`401`**, phân biệt bằng `message`:
+
+| `message` | Nghĩa | Interceptor nên làm |
+|---|---|---|
+| `"Access token has expired"` | Hết 15 phút, chuyện bình thường | **Gọi `/auth/refresh`**, rồi chạy lại request cũ |
+| `"Invalid token"` | Chữ ký sai / token méo / token rỗng | **Đừng refresh** — token hỏng thì refresh cũng vô ích. Xoá token, về màn đăng nhập |
+| `"Invalid token type: expected access token"` | Gửi nhầm refresh token vào chỗ access token | Bug client, sửa code |
+| `"Token is missing the subject claim"` / `"Malformed token"` | Token thiếu/sai claim | Như `"Invalid token"` |
+| `"Session has been revoked. Please sign in again."` | Đã logout-all, đổi mật khẩu, hoặc đổi email | **Đừng refresh** — RT cũng đã chết. Về màn đăng nhập |
+
+**Không gửi token** (chưa đăng nhập) cũng ra `401` — không phải `500`.
+
+🔴 **`5xx` thì TUYỆT ĐỐI đừng đăng xuất người dùng.** Nó nghĩa là backend/Redis đang trục trặc,
+tài khoản hoàn toàn bình thường. Hiện thông báo "Hệ thống đang bận, thử lại" và cho bấm lại —
+đá họ ra màn đăng nhập lúc này là bắt họ gõ lại mật khẩu vì một sự cố chẳng liên quan tới họ.
+
 ## 6.3 — `POST /auth/refresh`
 
 ```jsonc
