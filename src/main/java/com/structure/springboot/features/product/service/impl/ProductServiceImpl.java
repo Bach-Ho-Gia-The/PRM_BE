@@ -67,6 +67,22 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Transactional
     public ProductDetailResponse createProduct(ProductRequest request) {
+        return createProductInternal(request, List.of(), null);
+    }
+
+    @Override
+    @Transactional
+    public ProductDetailResponse createProductWithImages(ProductRequest request, List<MultipartFile> images,
+                                                         Integer thumbnailIndex) {
+        List<MultipartFile> files = images == null ? List.of() : images;
+        if (thumbnailIndex != null && (thumbnailIndex < 0 || thumbnailIndex >= files.size())) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "thumbnailIndex must identify an uploaded image");
+        }
+        return createProductInternal(request, files, thumbnailIndex);
+    }
+
+    private ProductDetailResponse createProductInternal(ProductRequest request, List<MultipartFile> files,
+                                                        Integer thumbnailIndex) {
         if (productRepository.existsBySku(request.sku())) {
             throw new ApiException(ErrorCode.CONFLICT, "Product SKU already exists: " + request.sku());
         }
@@ -79,13 +95,21 @@ public class ProductServiceImpl implements ProductService {
         ProductEntity entity = productMapper.toEntity(request);
         entity.setCategory(category);
         entity.setSlug(resolveSlug(request.slug(), request.name(), null));
-        // Không có ảnh thì không được lên shop. Ảnh gallery chỉ upload được SAU khi đã có id sản
-        // phẩm, nên nếu vẫn để ACTIVE thì mọi sản phẩm mới đều hiện ở trang công khai với ô ảnh
-        // rỗng trong lúc admin đi chọn file. Cùng quy tắc với createCollection: chuẩn bị xong mới đăng.
-        if (request.status() == RecordStatus.HIDDEN || !StringUtils.hasText(request.thumbnail())) {
+
+        // The managed-image service registers rollback cleanup for each successful upload.
+        for (int index = 0; index < files.size(); index++) {
+            ImageUploadResult uploaded = managedImageService.upload(files.get(index), "products");
+            ProductImageEntity image = newImage(entity, uploaded, index);
+            entity.getImages().add(image);
+            if ((thumbnailIndex != null && thumbnailIndex == index)
+                    || (thumbnailIndex == null && !StringUtils.hasText(entity.getThumbnail()))) {
+                setThumbnail(entity, image);
+            }
+        }
+        // A product without a cover is hidden, even when the caller requested ACTIVE.
+        if (request.status() == RecordStatus.HIDDEN || !StringUtils.hasText(entity.getThumbnail())) {
             entity.setStatus(RecordStatus.HIDDEN);
         }
-        // Có thumbnail và không yêu cầu HIDDEN: giữ mặc định ACTIVE cho client cũ.
         return productMapper.toDetailResponse(productRepository.save(entity));
     }
 

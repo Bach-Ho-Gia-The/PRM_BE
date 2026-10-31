@@ -7,10 +7,10 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Body của {@code POST /products/admin}.
+ * JSON body (hoặc part metadata của multipart) cho {@code POST /products/admin}.
  *
- * <p>{@code slug} để trống thì service tự sinh từ {@code name}. Tồn kho và gallery
- * là tài nguyên con, không nằm trong request này.</p>
+ * <p>{@code slug} để trống thì service tự sinh từ {@code name}. Gallery được gửi
+ * bằng các part images riêng trong multipart; tồn kho vẫn là tài nguyên con.</p>
  */
 public record ProductRequest(
         @NotBlank(message = "Product name is required")

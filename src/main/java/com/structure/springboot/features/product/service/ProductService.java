@@ -20,6 +20,10 @@ public interface ProductService {
 
     ProductDetailResponse createProduct(ProductRequest request);
 
+    /** thumbnailIndex is zero-based in the uploaded images; null follows the existing first-image rule. */
+    ProductDetailResponse createProductWithImages(ProductRequest request, List<MultipartFile> images,
+                                                  Integer thumbnailIndex);
+
     ProductDetailResponse updateProduct(UUID id, ProductUpdateRequest request);
 
     /** New images enter the gallery; the first one becomes the thumbnail if none exists. */

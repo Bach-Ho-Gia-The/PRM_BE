@@ -38,7 +38,7 @@ public class ProductController {
     private final ProductService productService;
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PostMapping("/admin")
+    @PostMapping(value = "/admin", consumes = {MediaType.APPLICATION_JSON_VALUE, "application/*+json"})
     public ResponseEntity<ApiResponse<ProductDetailResponse>> createProduct(
             @Valid @RequestBody ProductRequest requestDTO,
             HttpServletRequest request) {
@@ -48,6 +48,24 @@ public class ProductController {
                         .code(HttpStatus.CREATED.value())
                         .message("Product created successfully")
                         .result(productService.createProduct(requestDTO))
+                        .path(request.getRequestURI())
+                        .build()
+        );
+    }
+
+    /** Create with JSON metadata and zero or more gallery files in one multipart request. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping(value = "/admin", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ProductDetailResponse>> createProductWithImages(
+            @Valid @RequestPart("metadata") ProductRequest metadata,
+            @RequestPart(value = "images", required = false) List<MultipartFile> images,
+            @RequestParam(value = "thumbnailIndex", required = false) Integer thumbnailIndex,
+            HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                ApiResponse.<ProductDetailResponse>builder()
+                        .code(HttpStatus.CREATED.value())
+                        .message("Product created successfully")
+                        .result(productService.createProductWithImages(metadata, images, thumbnailIndex))
                         .path(request.getRequestURI())
                         .build()
         );

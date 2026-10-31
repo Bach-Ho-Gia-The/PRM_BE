@@ -98,8 +98,7 @@ class ProductImageServiceTest {
         when(categories.findById(category.getId())).thenReturn(Optional.of(category));
         when(products.save(any(ProductEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        // Ảnh gallery chỉ upload được SAU khi đã có id sản phẩm, nên sản phẩm tạo mà chưa có
-        // thumbnail bắt buộc phải nằm HIDDEN, nếu không nó hiện ở trang công khai với ô ảnh rỗng.
+        // JSON cũ không gửi gallery: nếu chưa có thumbnail thì sản phẩm phải nằm HIDDEN.
         ProductRequest noThumbnail = new ProductRequest("Legacy", null, "SKU-LEGACY", BigDecimal.TEN,
                 null, null, null, null, null, null, null, null, category.getId(), null);
         assertEquals(RecordStatus.HIDDEN, service.createProduct(noThumbnail).status());
